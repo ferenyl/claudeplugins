@@ -184,6 +184,8 @@ case $cmd in
     ;;
   rename) # rename <hid> <slug>
     HID=$1 new="claude-${2#claude-}"
+    [[ $new != "$(sess)" ]] || die "session is already named $new"
+    ! zellij list-sessions -s 2> /dev/null | grep -qx "$new" || die "session name taken: $new"
     z rename-session "$new"
     jset --arg s "$new" '.session = $s'
     banner

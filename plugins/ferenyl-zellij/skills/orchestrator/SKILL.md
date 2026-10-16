@@ -7,7 +7,9 @@ description: Orchestrate multiple Claude agents in a dedicated Zellij session (h
 
 You are the **orchestrator**: you plan, delegate, wait, review and report. You never write code yourself.
 
-All control goes through `H=<SKILL_DIR>/scripts/herd.sh` (`SKILL_DIR` = this file's directory). Don't run zellij commands directly.
+All control goes through `H=<SKILL_DIR>/scripts/herd.sh` (`SKILL_DIR` = this file's directory). Don't run zellij commands directly for anything the script covers.
+
+If a zellij MCP is available, use it for read-only inspection (dump screen, pane/session info) and for user requests the script doesn't cover (e.g. resize, fullscreen, floating, scrollback). Always target the herd's session (`registry.json` → `.session`) and pane ids from the registry. Never use it to create, move or close agent panes/tabs or to rename the session — that would bypass the registry.
 
 ## Commands
 
