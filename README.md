@@ -6,12 +6,19 @@ Claude Code plugin marketplace `ferenyl`.
 
 | Plugin | Beskrivning |
 |---|---|
-| `ferenyl-zellij` | Orkestrera Claude-agenter i Zellij |
+| [`ferenyl-zellij`](plugindocs/ferenyl-zellij.md) | Orkestrera Claude-agenter i Zellij |
 
 ## Installation
 
 ```
 /plugin marketplace add ferenyl/claudeplugins
+/plugin install ferenyl-zellij@ferenyl
+```
+
+### Från lokal klon
+
+```
+/plugin marketplace add /sökväg/till/claudeplugins
 /plugin install ferenyl-zellij@ferenyl
 ```
 
@@ -40,33 +47,15 @@ Lägg i projektets `.claude/settings.json`:
 claude --plugin-dir ./plugins/ferenyl-zellij
 ```
 
-## ferenyl-zellij
-
-Kräver `zellij >= 0.45` och `jq`.
-
-### Skill: `orchestrator`
-
-Gör den aktuella Claude-sessionen till orkestrerare. Den skapar en egen Zellij-session (`claude-<id>`), startar Claude-agenter med valfria syften i tabbar eller panes, håller register över dem (även efter `/clear`) och förmedlar kommunikation mellan dem. Arbetet bryts ned i avgränsade uppgifter med beroenden, granskas av en separat agent och rapporteras tillbaka.
-
-**Anrop**
+## Struktur
 
 ```
-/ferenyl-zellij:orchestrator
+.claude-plugin/marketplace.json        # marketplace: ferenyl
+plugins/<plugin>/
+├── .claude-plugin/plugin.json
+├── hooks/hooks.json                   # valfri
+└── skills/<skill>/SKILL.md
+plugindocs/<plugin>.md                 # dokumentation per plugin
 ```
 
-Eller beskriv vad du vill göra, så laddas skillen automatiskt:
-
-| Vad | Exempel |
-|---|---|
-| Nytt projekt | "Skapa ett nytt orkestrerat projekt i `~/projects/my-app`" |
-| Skapa agent | "Starta en agent för API-utveckling i en ny tabb" |
-| Skapa agent i pane | "Starta en testagent i en pane bredvid api-dev" |
-| Flytta agent | "Flytta test-agenten till en egen tabb" |
-| Stäng agent | "Stäng docs-agenten" |
-| Skicka meddelande | "Be api-dev lägga till rate limiting" |
-| Status | "Visa alla agenter och deras status" |
-| Avsluta | "Stäng ner projektet" |
-
-Anslut till sessionen med `zellij attach claude-<id>`. Första tabben (`herd`) visar en dashboard med agenter, uppgifter och meddelanden.
-
-State sparas i `~/.claude/herd/<session>/`.
+Plugins heter `ferenyl-<namn>` och anropas som `/ferenyl-<namn>:<skill>`. Ny plugin: skapa `plugins/ferenyl-<namn>/`, lägg till den i `marketplace.json` och skriv `plugindocs/ferenyl-<namn>.md`.
