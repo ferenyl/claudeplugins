@@ -6,20 +6,20 @@ Claude Code plugin marketplace `ferenyl`.
 
 | Plugin | Description |
 |---|---|
-| [`ferenyl-zellij`](plugindocs/ferenyl-zellij.md) | Orchestrate Claude agents in Zellij |
+| [`ferenyl-claude`](plugindocs/ferenyl-claude.md) | Orchestrate Claude agents in Zellij |
 
 ## Installation
 
 ```
 /plugin marketplace add ferenyl/claudeplugins
-/plugin install ferenyl-zellij@ferenyl
+/plugin install ferenyl-claude@ferenyl
 ```
 
 ### From a local clone
 
 ```
 /plugin marketplace add /path/to/claudeplugins
-/plugin install ferenyl-zellij@ferenyl
+/plugin install ferenyl-claude@ferenyl
 ```
 
 ### Per project
@@ -31,7 +31,7 @@ Add to the project's `.claude/settings.json`:
   "extraKnownMarketplaces": {
     "ferenyl": { "source": { "source": "github", "repo": "ferenyl/claudeplugins" } }
   },
-  "enabledPlugins": { "ferenyl-zellij@ferenyl": true }
+  "enabledPlugins": { "ferenyl-claude@ferenyl": true }
 }
 ```
 
@@ -44,7 +44,7 @@ Add to the project's `.claude/settings.json`:
 ### Local development
 
 ```bash
-claude --plugin-dir ./plugins/ferenyl-zellij
+claude --plugin-dir ./plugins/ferenyl-claude
 ```
 
 ## Structure

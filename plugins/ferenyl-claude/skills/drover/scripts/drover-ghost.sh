@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# herd-ghost.sh start|stop|watch <herd-id>
+# drover-ghost.sh start|stop|watch <drover-id>
 # Hidden fixed-size client. Without an attached client zellij 0.45 doesn't apply a layout
 # to new tabs, panes end up 1x1 and claude blocks on write.
-# watch: recreates the "orchestrator" tab if it is closed while agents exist,
+# watch: recreates the "corral" tab if it is closed while agents exist,
 # and cleans up when the session is gone.
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
-h="$HOME/.claude/herd/$2"
+h="$HOME/.claude/drover/$2"
 sess() { jq -r .session "$h/registry.json"; }
 alive() { zellij list-sessions -n 2> /dev/null | grep -E "^$1 " | grep -qv EXITED; }
 
@@ -40,9 +40,9 @@ case $1 in
     while sleep 5; do
       s=$(sess)
       alive "$s" || break
-      zellij -s "$s" action query-tab-names 2> /dev/null | grep -qx orchestrator && continue
+      zellij -s "$s" action query-tab-names 2> /dev/null | grep -qx corral && continue
       (($(jq '.agents | length' "$h/registry.json") > 0)) || continue
-      zellij -s "$s" action new-tab --name orchestrator --no-focus -- watch -n2 "$DIR/herd-dashboard.sh $2" > /dev/null
+      zellij -s "$s" action new-tab --name corral --no-focus -- watch -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
     done
     jq '.closed = true | .agents = {}' "$h/registry.json" > "$h/registry.json.tmp" && mv "$h/registry.json.tmp" "$h/registry.json"
     stop

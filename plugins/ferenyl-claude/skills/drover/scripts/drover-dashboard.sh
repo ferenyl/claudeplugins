@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# herd-dashboard.sh <herd-id>
-h="$HOME/.claude/herd/$1"
+# drover-dashboard.sh <drover-id>
+h="$HOME/.claude/drover/$1"
 echo "== $(jq -r .session "$h/registry.json" 2>/dev/null) =="
 echo "== agents =="
 jq -r '.agents | to_entries[] | "\(.key)\t\(.value.model // "-")\t\(.value.tab_name // "-")\t\(.value.pane_id)\t\(.value.purpose)"' "$h/registry.json" 2>/dev/null |
