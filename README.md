@@ -4,9 +4,9 @@ Claude Code plugin marketplace `ferenyl`.
 
 ## Plugins
 
-| Plugin | Beskrivning |
+| Plugin | Description |
 |---|---|
-| [`ferenyl-zellij`](plugindocs/ferenyl-zellij.md) | Orkestrera Claude-agenter i Zellij |
+| [`ferenyl-zellij`](plugindocs/ferenyl-zellij.md) | Orchestrate Claude agents in Zellij |
 
 ## Installation
 
@@ -15,16 +15,16 @@ Claude Code plugin marketplace `ferenyl`.
 /plugin install ferenyl-zellij@ferenyl
 ```
 
-### Från lokal klon
+### From a local clone
 
 ```
-/plugin marketplace add /sökväg/till/claudeplugins
+/plugin marketplace add /path/to/claudeplugins
 /plugin install ferenyl-zellij@ferenyl
 ```
 
-### Per projekt
+### Per project
 
-Lägg i projektets `.claude/settings.json`:
+Add to the project's `.claude/settings.json`:
 
 ```json
 {
@@ -35,27 +35,27 @@ Lägg i projektets `.claude/settings.json`:
 }
 ```
 
-### Uppdatera
+### Update
 
 ```
 /plugin marketplace update ferenyl
 ```
 
-### Lokal utveckling
+### Local development
 
 ```bash
 claude --plugin-dir ./plugins/ferenyl-zellij
 ```
 
-## Struktur
+## Structure
 
 ```
 .claude-plugin/marketplace.json        # marketplace: ferenyl
 plugins/<plugin>/
 ├── .claude-plugin/plugin.json
-├── hooks/hooks.json                   # valfri
+├── hooks/hooks.json                   # optional
 └── skills/<skill>/SKILL.md
-plugindocs/<plugin>.md                 # dokumentation per plugin
+plugindocs/<plugin>.md                 # documentation per plugin
 ```
 
-Plugins heter `ferenyl-<namn>` och anropas som `/ferenyl-<namn>:<skill>`. Ny plugin: skapa `plugins/ferenyl-<namn>/`, lägg till den i `marketplace.json` och skriv `plugindocs/ferenyl-<namn>.md`.
+Plugins are named `ferenyl-<name>` and invoked as `/ferenyl-<name>:<skill>`. To add a plugin: create `plugins/ferenyl-<name>/`, add it to `marketplace.json` and write `plugindocs/ferenyl-<name>.md`.

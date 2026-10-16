@@ -4,33 +4,39 @@
 /plugin install ferenyl-zellij@ferenyl
 ```
 
-Kräver `zellij >= 0.45` och `jq`.
+Requires `zellij >= 0.45` and `jq`.
 
-Installerar en `SessionStart`-hook som läser in aktiva sessioner igen efter `/clear`, compact och resume.
+Installs a `SessionStart` hook that reloads active sessions after `/clear`, compact and resume.
 
 ## Skill: `orchestrator`
 
-Gör den aktuella Claude-sessionen till orkestrerare. Den skapar en egen Zellij-session (`claude-<id>`), startar Claude-agenter med valfria syften i tabbar eller panes, håller register över dem (även efter `/clear`) och förmedlar kommunikation mellan dem. Arbetet bryts ned i avgränsade uppgifter med beroenden, granskas av en separat agent och rapporteras tillbaka.
+Turns the current Claude session into an orchestrator. It creates a dedicated Zellij session (`claude-<name>`), starts Claude agents with any purpose in tabs or panes, keeps track of them (even after `/clear`) and relays communication between them. Agents can also talk to each other directly. Work is broken down into bounded tasks with dependencies, reviewed by a separate agent and reported back.
 
-**Anrop**
+**Invocation**
 
 ```
 /ferenyl-zellij:orchestrator
 ```
 
-Eller beskriv vad du vill göra, så laddas skillen automatiskt:
+Or describe what you want to do and the skill loads automatically:
 
-| Vad | Exempel |
+| What | Example |
 |---|---|
-| Nytt projekt | "Skapa ett nytt orkestrerat projekt i `~/projects/my-app`" |
-| Skapa agent | "Starta en agent för API-utveckling i en ny tabb" |
-| Skapa agent i pane | "Starta en testagent i en pane bredvid api-dev" |
-| Flytta agent | "Flytta test-agenten till en egen tabb" |
-| Stäng agent | "Stäng docs-agenten" |
-| Skicka meddelande | "Be api-dev lägga till rate limiting" |
-| Status | "Visa alla agenter och deras status" |
-| Avsluta | "Stäng ner projektet" |
+| New project | "Create a new orchestrated project in `~/projects/my-app`" |
+| Spawn agent | "Start an agent for API development in a new tab" |
+| Spawn agent in pane | "Start a test agent in a pane next to api-dev" |
+| Move agent | "Move the test agent to its own tab" |
+| Close agent | "Close the docs agent" |
+| Change model | "Switch api-dev to opus" |
+| Rename session | "Rename the session to claude-payments" |
+| Send message | "Ask api-dev to add rate limiting" |
+| Status | "Show all agents and their status" |
+| Shut down | "Shut down the project" |
 
-Anslut till sessionen med `zellij attach claude-<id>`. Första tabben (`herd`) visar en dashboard med agenter, uppgifter och meddelanden.
+The session is named after what you are working on, e.g. `claude-auth-api`. Attach with `zellij attach claude-<name>`. The first tab (`orchestrator`) shows a dashboard with agents, tasks and messages. It is recreated automatically if closed while agents exist, and goes away when the session ends.
 
-State sparas i `~/.claude/herd/<session>/`.
+Each agent gets a model based on how hard the task is (`haiku` for simple, `sonnet` for normal implementation, `opus` for hard). `fable` is only used when you explicitly ask for it. Models are shown in the plan before start and can be changed at any time.
+
+Agents in a directory Claude Code doesn't trust yet are only started after you approve it.
+
+State is stored in `~/.claude/herd/<herd-id>/`.
