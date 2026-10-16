@@ -1,0 +1,7 @@
+{
+  "name": "ferenyl",
+  "owner": { "name": "ferenyl" },
+  "plugins": [
+    { "name": "zellij", "source": "./plugins/zellij", "description": "Orkestrera Claude-agenter i Zellij" }
+  ]
+}

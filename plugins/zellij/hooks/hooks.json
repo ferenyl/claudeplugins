@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact|resume",
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/skills/zellij-orchestrator/scripts/herd-context.sh" }
+        ]
+      }
+    ]
+  }
+}
