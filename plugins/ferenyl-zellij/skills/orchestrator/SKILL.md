@@ -1,5 +1,5 @@
 ---
-name: zellij-orchestrator
+name: orchestrator
 description: Orkestrera flera Claude-agenter i en egen Zellij-session (herder-liknande arbetssätt). Använd när användaren vill skapa ett nytt orkestrerat projekt, starta/flytta/stänga agenter i tabbar eller panes, ge agenter syften, skicka meddelanden mellan agenter eller dela upp en uppgift på flera agenter.
 ---
 

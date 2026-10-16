@@ -6,13 +6,13 @@ Claude Code plugin marketplace `ferenyl`.
 
 | Plugin | Beskrivning |
 |---|---|
-| `zellij` | Orkestrera Claude-agenter i Zellij |
+| `ferenyl-zellij` | Orkestrera Claude-agenter i Zellij |
 
 ## Installation
 
 ```
 /plugin marketplace add ferenyl/claudeplugins
-/plugin install zellij@ferenyl
+/plugin install ferenyl-zellij@ferenyl
 ```
 
 ### Per projekt
@@ -24,7 +24,7 @@ Lägg i projektets `.claude/settings.json`:
   "extraKnownMarketplaces": {
     "ferenyl": { "source": { "source": "github", "repo": "ferenyl/claudeplugins" } }
   },
-  "enabledPlugins": { "zellij@ferenyl": true }
+  "enabledPlugins": { "ferenyl-zellij@ferenyl": true }
 }
 ```
 
@@ -37,21 +37,21 @@ Lägg i projektets `.claude/settings.json`:
 ### Lokal utveckling
 
 ```bash
-claude --plugin-dir ./plugins/zellij
+claude --plugin-dir ./plugins/ferenyl-zellij
 ```
 
-## zellij
+## ferenyl-zellij
 
 Kräver `zellij >= 0.45` och `jq`.
 
-### Skill: `zellij-orchestrator`
+### Skill: `orchestrator`
 
 Gör den aktuella Claude-sessionen till orkestrerare. Den skapar en egen Zellij-session (`claude-<id>`), startar Claude-agenter med valfria syften i tabbar eller panes, håller register över dem (även efter `/clear`) och förmedlar kommunikation mellan dem. Arbetet bryts ned i avgränsade uppgifter med beroenden, granskas av en separat agent och rapporteras tillbaka.
 
 **Anrop**
 
 ```
-/zellij:zellij-orchestrator
+/ferenyl-zellij:orchestrator
 ```
 
 Eller beskriv vad du vill göra, så laddas skillen automatiskt:
