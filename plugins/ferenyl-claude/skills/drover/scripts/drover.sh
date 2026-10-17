@@ -167,7 +167,7 @@ case $cmd in
       dsid=$(jq -r '.session_id // empty' "$f" 2> /dev/null || true) dtp=$(jq -r '.transcript_path // empty' "$f" 2> /dev/null || true)
     fi
     jset --arg i "$dsid" --arg t "$dtp" '.drover_session_id = $i | .drover_transcript = $t'
-    (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$S")
+    (cd "$proj" && "${CLEAN_ENV[@]}" timeout 10 zellij attach --create-background "$S")
     "$DIR/drover-ghost.sh" start "$HID"
     z rename-tab-by-id 0 corral
     z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
@@ -262,7 +262,7 @@ case $cmd in
     HID=$1 s=$(sess) proj=$(jq -r .project "$(reg)")
     if ! alive "$s"; then
       timeout 10 zellij delete-session "$s" 2> /dev/null || true
-      (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$s")
+      (cd "$proj" && "${CLEAN_ENV[@]}" timeout 10 zellij attach --create-background "$s")
       "$DIR/drover-ghost.sh" start "$HID"
       z rename-tab-by-id 0 corral
       z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
@@ -290,16 +290,17 @@ case $cmd in
     ;;
   close) # close <hid>
     HID=$1 s=$(sess)
+    pat="^(.*/)?zellij --server .*/$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<< "$s")\$"
     "$DIR/drover-ghost.sh" stop "$HID"
     timeout 10 zellij kill-session "$s" 2> /dev/null || true
     for _ in $(seq 20); do
-      pgrep -f "zellij --server .*/$s\$" > /dev/null || break
+      pgrep -f "$pat" > /dev/null || break
       sleep 0.5
     done
-    if pgrep -f "zellij --server .*/$s\$" > /dev/null; then
-      pkill -TERM -f "zellij --server .*/$s\$" || true
+    if pgrep -f "$pat" > /dev/null; then
+      pkill -TERM -f "$pat" || true
       sleep 2
-      pkill -KILL -f "zellij --server .*/$s\$" || true
+      pkill -KILL -f "$pat" || true
     fi
     timeout 10 zellij delete-session "$s" 2> /dev/null || true
     jset '.closed = true | .agents = {}'
