@@ -8,7 +8,12 @@ set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 h="$HOME/.claude/drover/$2"
 sess() { jq -r .session "$h/registry.json"; }
-alive() { zellij list-sessions -n 2> /dev/null | grep -E "^$1 " | grep -qv EXITED; }
+alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
+  local out line
+  out=$(zellij list-sessions -n 2> /dev/null) || true
+  line=$(grep -E "^$1 " <<< "$out" || true)
+  [[ -n $line && $line != *EXITED* ]]
+}
 
 stop() {
   if [[ -f $h/ghost.pids ]]; then
@@ -37,12 +42,29 @@ case $1 in
     exit 1
     ;;
   watch)
+    exec 9> "$h/ghost.lock"
+    flock -n 9 || exit 0
+    miss=0 dead=0
     while sleep 5; do
       s=$(sess)
-      alive "$s" || break
-      zellij -s "$s" action query-tab-names 2> /dev/null | grep -qx corral && continue
+      if ! alive "$s"; then
+        ((++dead >= 2)) && break
+        continue
+      fi
+      dead=0
       (($(jq '.agents | length' "$h/registry.json") > 0)) || continue
-      zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+      tabs=$(zellij -s "$s" action list-tabs -j 2> /dev/null) || continue
+      jq -e 'type == "array" and length > 0' <<< "$tabs" > /dev/null 2>&1 || continue
+      n=$(jq '[.[] | select(.name == "corral")] | length' <<< "$tabs")
+      if ((n == 0)); then
+        ((++miss >= 2)) || continue
+        zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+      elif ((n > 1)); then
+        for t in $(jq -r '[.[] | select(.name == "corral") | .tab_id] | sort | .[1:][]' <<< "$tabs"); do
+          zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
+        done
+      fi
+      ((n == 0)) || miss=0
     done
     jq '.closed = true' "$h/registry.json" > "$h/registry.json.tmp" && mv "$h/registry.json.tmp" "$h/registry.json"
     stop
