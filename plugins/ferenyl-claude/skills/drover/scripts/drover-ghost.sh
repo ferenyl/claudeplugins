@@ -10,7 +10,7 @@ h="$HOME/.claude/drover/$2"
 sess() { jq -r .session "$h/registry.json"; }
 alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
   local out line
-  out=$(zellij list-sessions -n 2> /dev/null) || true
+  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || true
   line=$(grep -E "^$1 " <<< "$out" || true)
   [[ -n $line && $line != *EXITED* ]]
 }
@@ -31,7 +31,7 @@ case $1 in
     setsid script -qfc "stty rows 300 cols 1000; zellij attach '$s'" /dev/null < "$h/ghost.in" > /dev/null 2>&1 &
     echo $! >> "$h/ghost.pids"
     for _ in $(seq 20); do
-      if (($(zellij -s "$s" action list-clients 2> /dev/null | wc -l) > 1)); then
+      if (($(timeout 10 zellij -s "$s" action list-clients 2> /dev/null | wc -l) > 1)); then
         setsid "$0" watch "$2" > /dev/null 2>&1 < /dev/null &
         echo $! >> "$h/ghost.pids"
         exit 0
@@ -53,16 +53,16 @@ case $1 in
       fi
       dead=0
       (($(jq '.agents | length' "$h/registry.json") > 0)) || continue
-      tabs=$(zellij -s "$s" action list-tabs -j 2> /dev/null) || continue
+      tabs=$(timeout 10 zellij -s "$s" action list-tabs -j 2> /dev/null) || continue
       jq -e 'type == "array" and length > 0' <<< "$tabs" > /dev/null 2>&1 || continue
       n=$(jq '[.[] | select(.name == "corral")] | length' <<< "$tabs")
       if ((n == 0)); then
         ((++miss >= 2)) || continue
-        zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+        timeout 10 zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
         miss=0
       elif ((n > 1)); then
         for t in $(jq -r '[.[] | select(.name == "corral") | .tab_id] | sort | .[1:][]' <<< "$tabs"); do
-          zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
+          timeout 10 zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
         done
       fi
       ((n == 0)) || miss=0

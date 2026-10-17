@@ -11,7 +11,7 @@ CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPO
 die() { echo "$*" >&2; exit 1; }
 reg() { echo "$ROOT/$HID/registry.json"; }
 sess() { jq -r .session "$(reg)"; }
-z() { zellij -s "$(sess)" action "$@"; }
+z() { timeout 10 zellij -s "$(sess)" action "$@"; }
 jset() { local f; f=$(reg); jq "$@" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
 agent() { jq -r --arg a "$1" ".agents[\$a].$2 // empty" "$(reg)"; }
 state() { jq -r '.state // "unknown"' "$ROOT/$HID/status/$1.json" 2>/dev/null || echo unknown; }
@@ -34,7 +34,7 @@ drover_title() { # title the drover session (ids recorded by the SessionStart ho
 slugify() { local x=${1#corral-}; x=${x%-"$HID"}; echo "$x"; }
 alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
   local out line
-  out=$(zellij list-sessions -n 2> /dev/null) || true
+  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || true
   line=$(grep -E "^$1 " <<< "$out" || true)
   [[ -n $line && $line != *EXITED* ]]
 }
@@ -164,7 +164,7 @@ case $cmd in
     dsid=${DROVER_SESSION_ID:-} dtp=${DROVER_TRANSCRIPT:-}
     if [[ -z $dsid ]]; then
       f="$ROOT/sessions/$(printf %s "$PWD" | md5sum | cut -c1-12).json"
-      dsid=$(jq -r '.session_id // empty' "$f" 2> /dev/null) dtp=$(jq -r '.transcript_path // empty' "$f" 2> /dev/null)
+      dsid=$(jq -r '.session_id // empty' "$f" 2> /dev/null || true) dtp=$(jq -r '.transcript_path // empty' "$f" 2> /dev/null || true)
     fi
     jset --arg i "$dsid" --arg t "$dtp" '.drover_session_id = $i | .drover_transcript = $t'
     (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$S")
@@ -234,7 +234,7 @@ case $cmd in
     HID=$1 slug=$(slugify "$2")
     new="corral-$slug-$HID"
     [[ $new != "$(sess)" ]] || die "session is already named $new"
-    taken=$(zellij list-sessions -s 2> /dev/null) || true
+    taken=$(timeout 10 zellij list-sessions -s 2> /dev/null) || true
     ! grep -qx -- "$new" <<< "$taken" || die "session name taken: $new"
     z rename-session "$new"
     jset --arg s "$new" --arg sl "$slug" '.session = $s | .slug = $sl'
@@ -261,7 +261,7 @@ case $cmd in
   revive) # revive <hid> — recreate session if dead and relaunch all agents with --resume
     HID=$1 s=$(sess) proj=$(jq -r .project "$(reg)")
     if ! alive "$s"; then
-      zellij delete-session "$s" 2> /dev/null || true
+      timeout 10 zellij delete-session "$s" 2> /dev/null || true
       (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$s")
       "$DIR/drover-ghost.sh" start "$HID"
       z rename-tab-by-id 0 corral
@@ -290,9 +290,18 @@ case $cmd in
     ;;
   close) # close <hid>
     HID=$1 s=$(sess)
-    zellij kill-session "$s" 2> /dev/null || true
-    zellij delete-session "$s" 2> /dev/null || true
     "$DIR/drover-ghost.sh" stop "$HID"
+    timeout 10 zellij kill-session "$s" 2> /dev/null || true
+    for _ in $(seq 20); do
+      pgrep -f "zellij --server .*/$s\$" > /dev/null || break
+      sleep 0.5
+    done
+    if pgrep -f "zellij --server .*/$s\$" > /dev/null; then
+      pkill -TERM -f "zellij --server .*/$s\$" || true
+      sleep 2
+      pkill -KILL -f "zellij --server .*/$s\$" || true
+    fi
+    timeout 10 zellij delete-session "$s" 2> /dev/null || true
     jset '.closed = true | .agents = {}'
     echo "shut down: $s"
     ;;
