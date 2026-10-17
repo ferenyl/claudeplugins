@@ -137,7 +137,7 @@ case $cmd in
     (cd "$proj" && zellij attach --create-background "$S")
     "$DIR/drover-ghost.sh" start "$HID"
     z rename-tab-by-id 0 corral
-    type_in terminal_0 "watch -n2 '$DIR/drover-dashboard.sh $HID'"
+    z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
     echo "HID=$HID"
     drover_title
     banner
