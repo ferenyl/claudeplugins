@@ -16,6 +16,7 @@ drover.sh model <HID> <id> <model>        # waits for idle
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
 drover.sh kill <HID> <id>
 drover.sh rename <HID> <slug>
+drover.sh flush <HID> <id>              # deliver messages queued while the agent was blocked
 drover.sh read <HID> <id> [lines]         # agent's screen (default 40 lines)
 drover.sh revive <HID>                    # session dead: recreate and relaunch agents with --resume
 drover.sh status <HID>                    # agents, tasks, messages; state busy|idle|blocked
@@ -24,6 +25,7 @@ drover.sh close <HID>
 
 - slug: user's choice verbatim; else propose 2–4 kebab words in the plan. `rename` on request (ask first if the focus seems changed).
 - id: short kebab-case; purpose from the user, with boundaries.
+- `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
 - `[x -> drover] blocked:` in the inbox = agent waits for approval/input; `read` its screen and tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - End replies after new/spawn/move/model/rename/status with the printed session block.

@@ -3,6 +3,10 @@
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT="$HOME/.claude/drover"
+# Claude-session env that must not leak into the zellij server or agents (breaks transcripts, --resume, titles)
+CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH
+  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CLAUDE_ENV_FILE
+  -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_EFFORT -u DROVER_SESSION_ID -u DROVER_TRANSCRIPT)
 
 die() { echo "$*" >&2; exit 1; }
 reg() { echo "$ROOT/$HID/registry.json"; }
@@ -28,11 +32,32 @@ drover_title() { # title the drover session (ids recorded by the SessionStart ho
   bash "$DIR/drover-title.sh" "$t" "$i" "$n" || echo "drover session unknown: run /rename $n" >&2
 }
 slugify() { local x=${1#corral-}; x=${x%-"$HID"}; echo "$x"; }
-alive() { zellij list-sessions -n 2>/dev/null | grep -E "^$1 " | grep -qv EXITED; }
+alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
+  local out line
+  out=$(zellij list-sessions -n 2> /dev/null) || true
+  line=$(grep -E "^$1 " <<< "$out" || true)
+  [[ -n $line && $line != *EXITED* ]]
+}
 
-type_in() { # pane text
-  z paste -p "$1" "$2"
-  z send-keys -p "$1" Enter
+input_box() { # pane: lines between the last two rule lines of the screen (the prompt box)
+  local screen
+  screen=$(z dump-screen -p "$1" 2> /dev/null) || screen=
+  tac <<< "$screen" | awk '/^─{20}/{c++; next} c==1'
+}
+
+type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
+  local pane=$1 text=$2 verify=${3:-1} needle box _
+  needle=${text:0:30}
+  z paste -p "$pane" "$text" || return 1
+  sleep 0.5
+  for _ in 1 2 3; do
+    z send-keys -p "$pane" Enter || return 1
+    [[ $verify == 1 ]] || return 0
+    sleep 1
+    box=$(input_box "$pane")
+    if ! grep -qF -e "$needle" -e "[Pasted text" <<< "$box"; then return 0; fi
+  done
+  return 1
 }
 
 send() { # to from msg
@@ -43,7 +68,15 @@ send() { # to from msg
   else
     pane=$(agent "$to" pane_id)
     [[ -n $pane ]] || die "unknown agent: $to"
-    type_in "$pane" "[from $from] $msg"
+    if [[ $(state "$to") == blocked ]]; then # Enter would answer its dialog
+      mkdir -p "$h/queue"
+      printf '%s\t%s\n' "$from" "$msg" >> "$h/queue/$to.txt"
+      echo "[drover-sh -> drover] queued for $to (blocked, needs input): $msg. After it is unblocked: drover.sh flush $HID $to" >> "$h/inbox/drover.log"
+      echo "$(date -Is) $line (queued)" >> "$h/messages.log"
+      echo "queued for $to (blocked)" >&2
+      return 0
+    fi
+    type_in "$pane" "[from $from] $msg" || die "not delivered to $to"
   fi
   echo "$(date -Is) $line" >> "$h/messages.log"
 }
@@ -65,7 +98,7 @@ tab_empty() { # tab_id
 close_agent_pane() { # id
   local pane tab
   pane=$(agent "$1" pane_id) tab=$(agent "$1" tab_id)
-  type_in "$pane" "/exit" || true
+  type_in "$pane" "/exit" 0 || true
   sleep 2
   z close-pane -p "$pane" 2> /dev/null || true
   tab_empty "$tab" && z close-tab-by-id "$tab" 2> /dev/null || true
@@ -97,7 +130,7 @@ EOF
 launch() { # id where cwd model -- claude-args...
   local id=$1 where=$2 cwd=$3 model=$4 h="$ROOT/$HID" tab pane target
   shift 5
-  local cmd=(env DROVER_AGENT=1 claude --model "$model" --settings "$h/agents/$id.settings.json"
+  local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude --model "$model" --settings "$h/agents/$id.settings.json"
     --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
   case $where in
     tab)
@@ -134,7 +167,7 @@ case $cmd in
       dsid=$(jq -r '.session_id // empty' "$f" 2> /dev/null) dtp=$(jq -r '.transcript_path // empty' "$f" 2> /dev/null)
     fi
     jset --arg i "$dsid" --arg t "$dtp" '.drover_session_id = $i | .drover_transcript = $t'
-    (cd "$proj" && zellij attach --create-background "$S")
+    (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$S")
     "$DIR/drover-ghost.sh" start "$HID"
     z rename-tab-by-id 0 corral
     z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
@@ -169,7 +202,8 @@ case $cmd in
   model) # model <hid> <id> <model>
     HID=$1 id=$2 model=$3
     wait_idle "$id"
-    type_in "$(agent "$id" pane_id)" "/model $model"
+    type_in "$(agent "$id" pane_id)" "/model $model" || die "/model not delivered to $id"
+    sleep 2
     jset --arg a "$id" --arg m "$model" '.agents[$a].model = $m'
     echo "$id -> $model"
     banner
@@ -200,11 +234,23 @@ case $cmd in
     HID=$1 slug=$(slugify "$2")
     new="corral-$slug-$HID"
     [[ $new != "$(sess)" ]] || die "session is already named $new"
-    ! zellij list-sessions -s 2> /dev/null | grep -qx "$new" || die "session name taken: $new"
+    taken=$(zellij list-sessions -s 2> /dev/null) || true
+    ! grep -qx -- "$new" <<< "$taken" || die "session name taken: $new"
     z rename-session "$new"
     jset --arg s "$new" --arg sl "$slug" '.session = $s | .slug = $sl'
     drover_title
     banner
+    ;;
+  flush) # flush <hid> <id> — deliver messages queued while the agent was blocked
+    HID=$1 id=$2 q="$ROOT/$HID/queue/$2.txt"
+    [[ -s $q ]] || die "nothing queued for $id"
+    [[ $(state "$id") != blocked ]] || die "$id is still blocked"
+    while IFS=$'\t' read -r -u 3 f m; do
+      type_in "$(agent "$id" pane_id)" "[from $f] $m" || die "not delivered to $id (undelivered lines kept)"
+      sed -i 1d "$q"
+    done 3< "$q"
+    rm -f "$q"
+    echo "flushed: $id"
     ;;
   read) # read <hid> <id> [lines]
     HID=$1 id=$2
@@ -216,7 +262,7 @@ case $cmd in
     HID=$1 s=$(sess) proj=$(jq -r .project "$(reg)")
     if ! alive "$s"; then
       zellij delete-session "$s" 2> /dev/null || true
-      (cd "$proj" && zellij attach --create-background "$s")
+      (cd "$proj" && "${CLEAN_ENV[@]}" zellij attach --create-background "$s")
       "$DIR/drover-ghost.sh" start "$HID"
       z rename-tab-by-id 0 corral
       z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
@@ -250,5 +296,5 @@ case $cmd in
     jset '.closed = true | .agents = {}'
     echo "shut down: $s"
     ;;
-  *) die "commands: new spawn send model move kill rename read revive status close" ;;
+  *) die "commands: new spawn send model move kill rename flush read revive status close" ;;
 esac
