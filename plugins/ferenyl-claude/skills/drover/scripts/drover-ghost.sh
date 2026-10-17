@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # drover-ghost.sh start|stop|watch <drover-id>
-# Hidden fixed-size client. Without an attached client zellij 0.45 doesn't apply a layout
-# to new tabs, panes end up 1x1 and claude blocks on write.
+# Hidden oversized client (zellij sizes a tab to its smallest client, so it never caps the user's).
+# Without an attached client zellij 0.45 does not apply a layout to new tabs, panes end up 1x1 and claude blocks on write.
 # watch: recreates the "corral" tab if it is closed while agents exist,
 # and cleans up when the session is gone.
 set -euo pipefail
@@ -23,7 +23,7 @@ case $1 in
     [[ -p $h/ghost.in ]] || mkfifo "$h/ghost.in"
     setsid sleep infinity > "$h/ghost.in" &
     echo $! > "$h/ghost.pids"
-    setsid script -qfc "stty rows 50 cols 160; zellij attach '$s'" /dev/null < "$h/ghost.in" > /dev/null 2>&1 &
+    setsid script -qfc "stty rows 300 cols 1000; zellij attach '$s'" /dev/null < "$h/ghost.in" > /dev/null 2>&1 &
     echo $! >> "$h/ghost.pids"
     for _ in $(seq 20); do
       if (($(zellij -s "$s" action list-clients 2> /dev/null | wc -l) > 1)); then
@@ -42,7 +42,7 @@ case $1 in
       alive "$s" || break
       zellij -s "$s" action query-tab-names 2> /dev/null | grep -qx corral && continue
       (($(jq '.agents | length' "$h/registry.json") > 0)) || continue
-      zellij -s "$s" action new-tab --name corral --no-focus -- watch -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+      zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
     done
     jq '.closed = true' "$h/registry.json" > "$h/registry.json.tmp" && mv "$h/registry.json.tmp" "$h/registry.json"
     stop

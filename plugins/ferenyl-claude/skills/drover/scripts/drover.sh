@@ -137,7 +137,7 @@ case $cmd in
     (cd "$proj" && zellij attach --create-background "$S")
     "$DIR/drover-ghost.sh" start "$HID"
     z rename-tab-by-id 0 corral
-    type_in terminal_0 "watch -n2 '$DIR/drover-dashboard.sh $HID'"
+    z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
     echo "HID=$HID"
     drover_title
     banner
@@ -219,7 +219,7 @@ case $cmd in
       (cd "$proj" && zellij attach --create-background "$s")
       "$DIR/drover-ghost.sh" start "$HID"
       z rename-tab-by-id 0 corral
-      type_in terminal_0 "watch -n2 '$DIR/drover-dashboard.sh $HID'"
+      z new-pane --in-place --pane-id terminal_0 --close-replaced-pane --name corral -- watch -t -n2 "$DIR/drover-dashboard.sh $HID" > /dev/null
     elif ! kill -0 "$(sed -n 2p "$ROOT/$HID/ghost.pids" 2> /dev/null)" 2> /dev/null; then
       "$DIR/drover-ghost.sh" stop "$HID"
       "$DIR/drover-ghost.sh" start "$HID"
