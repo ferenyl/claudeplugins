@@ -5,7 +5,8 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT="$HOME/.claude/drover"
 # Claude-session env that must not leak into the zellij server or agents (breaks transcripts, --resume, titles)
 CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH
-  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CLAUDE_ENV_FILE -u DROVER_SESSION_ID -u DROVER_TRANSCRIPT)
+  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CLAUDE_ENV_FILE
+  -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_EFFORT -u DROVER_SESSION_ID -u DROVER_TRANSCRIPT)
 
 die() { echo "$*" >&2; exit 1; }
 reg() { echo "$ROOT/$HID/registry.json"; }
@@ -38,17 +39,23 @@ alive() { # no pipe from zellij into grep -q: an early exit would give zellij EP
   [[ -n $line && $line != *EXITED* ]]
 }
 
-type_in() { # pane text [verify=1]: paste, settle, Enter, then check the text reached the pane; retry
-  local pane=$1 text=$2 verify=${3:-1} needle screen _
+input_box() { # pane: lines between the last two rule lines of the screen (the prompt box)
+  local screen
+  screen=$(z dump-screen -p "$1" 2> /dev/null) || screen=
+  tac <<< "$screen" | awk '/^─{20}/{c++; next} c==1'
+}
+
+type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
+  local pane=$1 text=$2 verify=${3:-1} needle box _
   needle=${text:0:30}
+  z paste -p "$pane" "$text" || return 1
+  sleep 0.5
   for _ in 1 2 3; do
-    z paste -p "$pane" "$text" || return 1
-    sleep 0.5
     z send-keys -p "$pane" Enter || return 1
     [[ $verify == 1 ]] || return 0
     sleep 1
-    screen=$(z dump-screen -p "$pane" 2> /dev/null) || screen=
-    ! grep -qF -- "$needle" <<< "$screen" || return 0
+    box=$(input_box "$pane")
+    if ! grep -qF -e "$needle" -e "[Pasted text" <<< "$box"; then return 0; fi
   done
   return 1
 }
@@ -227,7 +234,8 @@ case $cmd in
     HID=$1 slug=$(slugify "$2")
     new="corral-$slug-$HID"
     [[ $new != "$(sess)" ]] || die "session is already named $new"
-    ! zellij list-sessions -s 2> /dev/null | grep -qx "$new" || die "session name taken: $new"
+    taken=$(zellij list-sessions -s 2> /dev/null) || true
+    ! grep -qx -- "$new" <<< "$taken" || die "session name taken: $new"
     z rename-session "$new"
     jset --arg s "$new" --arg sl "$slug" '.session = $s | .slug = $sl'
     drover_title
@@ -237,9 +245,10 @@ case $cmd in
     HID=$1 id=$2 q="$ROOT/$HID/queue/$2.txt"
     [[ -s $q ]] || die "nothing queued for $id"
     [[ $(state "$id") != blocked ]] || die "$id is still blocked"
-    while IFS=$'\t' read -r f m; do
-      type_in "$(agent "$id" pane_id)" "[from $f] $m" || die "not delivered to $id"
-    done < "$q"
+    while IFS=$'\t' read -r -u 3 f m; do
+      type_in "$(agent "$id" pane_id)" "[from $f] $m" || die "not delivered to $id (undelivered lines kept)"
+      sed -i 1d "$q"
+    done 3< "$q"
     rm -f "$q"
     echo "flushed: $id"
     ;;

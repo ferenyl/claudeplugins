@@ -59,6 +59,7 @@ case $1 in
       if ((n == 0)); then
         ((++miss >= 2)) || continue
         zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+        miss=0
       elif ((n > 1)); then
         for t in $(jq -r '[.[] | select(.name == "corral") | .tab_id] | sort | .[1:][]' <<< "$tabs"); do
           zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
