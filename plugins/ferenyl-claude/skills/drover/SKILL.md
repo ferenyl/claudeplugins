@@ -6,10 +6,11 @@ allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/drover.sh *)
 
 # Drover
 You are the **drover**: plan, delegate, wait, review, report. Never write code yourself.
+The drover runs in its own Claude inside the corral session (tab `drover`). If `DROVER_HID` is set you are that drover: never run `new` or `close` unless the user asks. Otherwise you are the launcher: write the brief, run `new`, tell the user to attach, and stop orchestrating.
 Control only via `${CLAUDE_SKILL_DIR}/scripts/drover.sh` (below: `drover.sh`). Always call it by that full path, no variables or `cd` (the allowed-tools pre-approval is a prefix match); no direct zellij for covered actions. A zellij MCP may be used read-only (dump screen, info) and for uncovered requests (resize, float, scrollback), targeting registry.json `.session`/pane ids; never to create/move/close agents or rename the session.
 
 ```
-drover.sh new <slug> <project-dir>        # session corral-<slug>-<HID>, prints HID=
+drover.sh new <slug> <project-dir> [--model M] [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
 drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust]
 drover.sh send <HID> <to> drover "<msg>"
 drover.sh model <HID> <id> <model>        # waits for idle
@@ -23,17 +24,19 @@ drover.sh status <HID>                    # agents, tasks, messages; state busy|
 drover.sh close <HID>
 ```
 
+- `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `opus` (`--model` overrides). After `new` tell the user to attach (`zellij attach <session>`) and stop: this session can be closed.
+- Mutating commands (spawn/model/move/kill/rename/flush) refuse from outside the drover pane unless `--force`. status/read/send/close/revive work from anywhere.
 - slug: user's choice verbatim; else propose 2–4 kebab words in the plan. `rename` on request (ask first if the focus seems changed).
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
 - `[x -> drover] blocked:` in the inbox = agent waits for approval/input; `read` its screen and tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - End replies after new/spawn/move/model/rename/status with the printed session block.
-- `close` stops the ghost, kills the zellij session and waits for its server to exit (SIGTERM/SIGKILL fallback); every zellij CLI call has a 10s timeout so a hung server cannot block commands.
-- First tab `corral` is the dashboard; auto-recreated; never close it.
-- HID is permanent. The drover session is auto-titled `drover-<slug>-<HID>` by new/rename (hook reapplies after /clear|compact; may show only after /resume); if the script says "drover session unknown", ask the user to run the printed `/rename`.
-- After /clear a hook reloads active sessions; continue as drover.
-- State: ~/.claude/drover/<HID>/ (registry.json, tasks.json, status/, reports/, inbox/drover.log, messages.log).
+- `close` stops the ghost, then a detached runner kills the zellij session and waits for its server to exit (SIGTERM/SIGKILL fallback); the drover inside exits with the session. Every zellij CLI call has a 10s timeout so a hung server cannot block commands.
+- Tabs: `corral` (dashboard only) is always position 0, `drover` position 1, both tracked by stored tab id and restored after a recreate or a user move. The watcher recreates only the dashboard; `revive` recreates the drover tab (`--resume` of its session). A closed drover tab is announced once in the inbox.
+- HID is permanent. The drover session is titled `drover-<slug>-<HID>` at launch; `rename` retitles it (the hook reapplies it after /clear|compact).
+- After /clear a hook reloads this drover's state; continue as drover. From inside the pane use only `*-by-id`/`--pane-id`/`--tab-id` zellij forms (focus-dependent actions hit the hidden ghost client).
+- State: ~/.claude/drover/<HID>/ (registry.json, tasks.json, brief.md, status/, reports/, inbox/drover.log, messages.log).
 
 ## Models (smallest that works; user's choice wins; show per agent in plan)
 haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: normal implementation, tests, known-cause fixes, review · opus: architecture, unclear bugs, big refactors, final review · fable: only if the user asks; never suggest it.
