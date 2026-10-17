@@ -29,6 +29,7 @@ drover.sh close <HID>
 - `[x -> drover] blocked:` in the inbox = agent waits for approval/input; `read` its screen and tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - End replies after new/spawn/move/model/rename/status with the printed session block.
+- `close` stops the ghost, kills the zellij session and waits for its server to exit (SIGTERM/SIGKILL fallback); every zellij CLI call has a 10s timeout so a hung server cannot block commands.
 - First tab `corral` is the dashboard; auto-recreated; never close it.
 - HID is permanent. The drover session is auto-titled `drover-<slug>-<HID>` by new/rename (hook reapplies after /clear|compact; may show only after /resume); if the script says "drover session unknown", ask the user to run the printed `/rename`.
 - After /clear a hook reloads active sessions; continue as drover.
