@@ -8,9 +8,10 @@ set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 h="$HOME/.claude/drover/$2"
 sess() { jq -r .session "$h/registry.json"; }
-alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
-  local out line
-  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || true
+alive() { # 0 alive, 1 dead, 2 unknown (timeout). no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
+  local out line rc=0
+  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || rc=$?
+  ((rc != 124)) || return 2 # timed out: unknown, not dead
   line=$(grep -E "^$1 " <<< "$out" || true)
   [[ -n $line && $line != *EXITED* ]]
 }
@@ -47,7 +48,10 @@ case $1 in
     miss=0 dead=0
     while sleep 5; do
       s=$(sess)
-      if ! alive "$s"; then
+      rc=0
+      alive "$s" || rc=$?
+      ((rc != 2)) || continue
+      if ((rc == 1)); then
         ((++dead >= 2)) && break
         continue
       fi
@@ -58,7 +62,7 @@ case $1 in
       n=$(jq '[.[] | select(.name == "corral")] | length' <<< "$tabs")
       if ((n == 0)); then
         ((++miss >= 2)) || continue
-        timeout 10 zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
+        timeout 10 zellij -s "$s" action new-tab --name corral --no-focus -- watch -t -n2 "$DIR/drover-dashboard.sh $2" > /dev/null || true
         miss=0
       elif ((n > 1)); then
         for t in $(jq -r '[.[] | select(.name == "corral") | .tab_id] | sort | .[1:][]' <<< "$tabs"); do

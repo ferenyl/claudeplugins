@@ -32,9 +32,10 @@ drover_title() { # title the drover session (ids recorded by the SessionStart ho
   bash "$DIR/drover-title.sh" "$t" "$i" "$n" || echo "drover session unknown: run /rename $n" >&2
 }
 slugify() { local x=${1#corral-}; x=${x%-"$HID"}; echo "$x"; }
-alive() { # no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
-  local out line
-  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || true
+alive() { # 0 alive, 1 dead, 2 unknown (timeout). no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
+  local out line rc=0
+  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || rc=$?
+  ((rc != 124)) || return 2 # timed out: unknown, not dead
   line=$(grep -E "^$1 " <<< "$out" || true)
   [[ -n $line && $line != *EXITED* ]]
 }
@@ -260,7 +261,10 @@ case $cmd in
     ;;
   revive) # revive <hid> — recreate session if dead and relaunch all agents with --resume
     HID=$1 s=$(sess) proj=$(jq -r .project "$(reg)")
-    if ! alive "$s"; then
+    rc=0
+    alive "$s" || rc=$?
+    ((rc != 2)) || die "zellij unresponsive"
+    if ((rc == 1)); then
       timeout 10 zellij delete-session "$s" 2> /dev/null || true
       (cd "$proj" && "${CLEAN_ENV[@]}" timeout 10 zellij attach --create-background "$s")
       "$DIR/drover-ghost.sh" start "$HID"
@@ -290,7 +294,7 @@ case $cmd in
     ;;
   close) # close <hid>
     HID=$1 s=$(sess)
-    pat="^(.*/)?zellij --server .*/$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<< "$s")\$"
+    pat="^(.*/)?zellij --server .*/corral-[^/]*-$HID\$" # session may have been renamed; the HID suffix never changes
     "$DIR/drover-ghost.sh" stop "$HID"
     timeout 10 zellij kill-session "$s" 2> /dev/null || true
     for _ in $(seq 20); do
