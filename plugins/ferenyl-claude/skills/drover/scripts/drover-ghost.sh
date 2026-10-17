@@ -44,7 +44,7 @@ case $1 in
       (($(jq '.agents | length' "$h/registry.json") > 0)) || continue
       zellij -s "$s" action new-tab --name corral --no-focus -- watch -n2 "$DIR/drover-dashboard.sh $2" > /dev/null
     done
-    jq '.closed = true | .agents = {}' "$h/registry.json" > "$h/registry.json.tmp" && mv "$h/registry.json.tmp" "$h/registry.json"
+    jq '.closed = true' "$h/registry.json" > "$h/registry.json.tmp" && mv "$h/registry.json.tmp" "$h/registry.json"
     stop
     ;;
   stop) stop ;;
