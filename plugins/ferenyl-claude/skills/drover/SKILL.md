@@ -25,7 +25,7 @@ drover.sh close <HID>
 ```
 
 - `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `opus` (`--model` overrides). After `new` tell the user to attach (`zellij attach <session>`) and stop: this session can be closed.
-- Mutating commands (spawn/model/move/kill/rename/flush) refuse from outside the drover pane unless `--force`. status/read/send/close/revive work from anywhere.
+- Mutating commands (spawn/model/move/kill/rename/flush) refuse from outside the drover pane unless `--force` is given right after the id (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice verbatim; else propose 2–4 kebab words in the plan. `rename` on request (ask first if the focus seems changed).
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.

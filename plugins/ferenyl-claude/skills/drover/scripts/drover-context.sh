@@ -43,7 +43,7 @@ fi
 for r in "$D"/*/registry.json; do
   [[ -f $r ]] || continue
   jq -e --arg c "$cwd" '.drover_cwd == $c' "$r" >/dev/null 2>&1 || continue
-  if jq -e '.closed and ((.agents | length > 0) or .drover)' "$r" >/dev/null 2>&1; then
+  if jq -e '.closed and (.shutdown | not) and ((.agents | length > 0) or .drover)' "$r" >/dev/null 2>&1; then
     jq -r '"Drover \(.id): corral session dead, \(.agents | length) agents saved — run drover.sh revive \(.id)."' "$r"
     continue
   fi

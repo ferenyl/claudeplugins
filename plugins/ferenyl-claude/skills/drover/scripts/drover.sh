@@ -162,9 +162,9 @@ launch() { # id where cwd model -- claude-args...
 
 kq() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; } # KDL string
 
-tab_template() { # default_tab_template body from the user's default layout (bare `pane` -> children)
+tab_template() { # default_tab_template body from the user's default layout (bare `pane` -> children); TPL_STOCK=1: stock bars
   local f="$HOME/.config/zellij/layouts/default.kdl"
-  if [[ -f $f ]] && grep -qE '^[[:space:]]*pane[[:space:]]*$' "$f"; then
+  if [[ ${TPL_STOCK:-} != 1 && -f $f ]] && grep -qE '^[[:space:]]*pane[[:space:]]*$' "$f"; then
     awk 'NR==FNR { if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) last = FNR; next }
       FNR == last { next }
       !started && /^[[:space:]]*layout[[:space:]]*\{/ { started = 1; next }
@@ -237,13 +237,30 @@ EOS
   chmod +x "$h/drover-launch.sh"
 }
 
-wait_tabs() { # the layout is applied asynchronously after attach --create-background
+wait_tabs() { # the layout is applied asynchronously after attach --create-background; 1 if it never shows
   local t _ want='any(.[]; .name=="corral")'
   [[ $(jq -r '.drover.mode // empty' "$(reg)") != corral ]] || want="$want and any(.[]; .name==\"drover\")"
-  for _ in $(seq 30); do
+  for _ in $(seq 20); do
     t=$(z list-tabs -j 2> /dev/null) || t=
     [[ -z $t ]] || ! jq -e "$want" <<< "$t" > /dev/null 2>&1 || return 0
     sleep 0.5
+  done
+  return 1
+}
+
+start_session() { # name proj: create the session from corral.kdl; the user's default layout is not guaranteed to convert, so retry with the stock bars
+  local s=$1 proj=$2 h="$ROOT/$HID" try
+  for try in user stock; do
+    if [[ $try == stock ]]; then
+      timeout 10 zellij kill-session "$s" 2> /dev/null || true
+      timeout 10 zellij delete-session "$s" 2> /dev/null || true
+      TPL_STOCK=1 write_layout
+    fi
+    (cd "$proj" && "${SERVER_ENV[@]}" timeout 10 zellij -n "$h/corral.kdl" attach --create-background "$s") || true
+    if wait_tabs; then
+      "$DIR/drover-ghost.sh" start "$HID"
+      return 0
+    fi
   done
   die "corral tabs did not appear"
 }
@@ -273,14 +290,13 @@ order_tabs() { # corral at position 0, drover at position 1
   [[ -z $did ]] || move_to "$did" 1
 }
 
-drover_running() { # pid file + cmdline: no pgrep, it would match wrapper command lines
-  local h="$ROOT/$HID" pid sid
+drover_running() { # pid file + cmdline: no pgrep, it would match wrapper command lines. Not the sid: /clear rebinds it.
+  local h="$ROOT/$HID" pid cmdline
   [[ -r $h/drover.pid ]] || return 1
   pid=$(< "$h/drover.pid")
-  sid=$(jq -r '.drover.session_id' "$(reg)")
   kill -0 "$pid" 2> /dev/null || return 1
-  local cmdline; cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null) || return 1
-  [[ $cmdline == *claude* && $cmdline == *"$sid"* ]]
+  cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null) || return 1
+  [[ $cmdline == *"$h/drover.settings.json"* || $cmdline == *"$h/drover-launch.sh"* ]] # claude, or the launcher while it starts
 }
 
 ensure_drover() { # recreate the drover tab at position 1 if the tab or its claude is gone
@@ -294,7 +310,7 @@ ensure_drover() { # recreate the drover tab at position 1 if the tab or its clau
       if drover_running; then exit 0; fi
       z close-tab-by-id "$did" 2> /dev/null || true
     fi
-    id=$(z new-tab --layout "$h/drover-tab.kdl" --name drover --no-focus)
+    id=$(z new-tab --layout "$h/drover-tab.kdl" --name drover --no-focus) || { echo "could not create the drover tab" >&2; exit 0; }
     jset --argjson t "$id" '.drover.tab_id = $t | del(.drover.gone_notified)'
   ) 7> "$h/drover.lock"
   order_tabs
@@ -303,11 +319,11 @@ ensure_drover() { # recreate the drover tab at position 1 if the tab or its clau
 trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1; }
 
 cmd=${1:-}; shift || true
-FORCE=0 args=()
-for a in "$@"; do
-  if [[ $a == --force ]]; then FORCE=1; else args+=("$a"); fi
-done
-set -- "${args[@]}"
+FORCE=0
+if [[ ${2:-} == --force ]]; then # drover.sh <cmd> <HID> --force ...
+  FORCE=1
+  set -- "$1" "${@:3}"
+fi
 case $cmd in
   new) # new <slug> <project-dir> [--model M] [--brief FILE] [--fork]
     slug=$1 proj=$(realpath "$2")
@@ -340,9 +356,7 @@ case $cmd in
     [[ -z $brief ]] || cp "$brief" "$h/brief.md"
     write_drover_files
     write_layout
-    (cd "$proj" && "${SERVER_ENV[@]}" timeout 10 zellij -n "$h/corral.kdl" attach --create-background "$S")
-    "$DIR/drover-ghost.sh" start "$HID"
-    wait_tabs
+    start_session "$S" "$proj"
     store_ids
     order_tabs
     echo "HID=$HID"
@@ -444,15 +458,13 @@ case $cmd in
     rc=0
     alive "$s" || rc=$?
     ((rc != 2)) || die "zellij unresponsive"
-    jset 'del(.closing_at)'
+    jset 'del(.closing_at) | del(.shutdown)'
     rm -f "$h/close.done"
     write_drover_files
     write_layout
     if ((rc == 1)); then
       timeout 10 zellij delete-session "$s" 2> /dev/null || true
-      (cd "$proj" && "${SERVER_ENV[@]}" timeout 10 zellij -n "$h/corral.kdl" attach --create-background "$s")
-      "$DIR/drover-ghost.sh" start "$HID"
-      wait_tabs
+      start_session "$s" "$proj"
       store_ids
     else
       if ! kill -0 "$(sed -n 2p "$h/ghost.pids" 2> /dev/null)" 2> /dev/null; then
@@ -511,7 +523,7 @@ case $cmd in
       pkill -KILL -f "$pat" || true
     fi
     timeout 10 zellij delete-session "$s" 2> /dev/null || true
-    jset '.closed = true | del(.closing_at) | .agents = {}'
+    jset '.closed = true | .shutdown = true | del(.closing_at) | .agents = {}'
     touch "$h/close.done"
     echo "shut down: $s"
     command -v notify-send > /dev/null && notify-send "drover: $s shut down" || true
@@ -531,5 +543,5 @@ case $cmd in
       command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
     fi
     ;;
-  *) die "commands: new spawn send model move kill rename flush read revive status close (any mutating command: --force)" ;;
+  *) die "commands: new spawn send model move kill rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac
