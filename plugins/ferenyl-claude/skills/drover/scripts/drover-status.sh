@@ -11,6 +11,6 @@ jq -c --arg s "$s" '{state: $s, session_id, transcript_path, cwd, at: (now | tod
 mv "$f.tmp" "$f"
 if [[ $s == blocked ]]; then
   id=$(basename "$f" .json) h=$(dirname "$(dirname "$f")")
-  echo "[$id -> drover] blocked: needs input/approval" >> "$h/inbox/drover.log"
+  [[ $id == drover ]] || echo "[$id -> drover] blocked: needs input/approval" >> "$h/inbox/drover.log"
   command -v notify-send > /dev/null && notify-send "drover: $id blocked" "needs input/approval" || true
 fi

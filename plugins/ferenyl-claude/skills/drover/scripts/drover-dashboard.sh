@@ -3,6 +3,10 @@
 h="$HOME/.claude/drover/$1"
 echo "== $(jq -r .session "$h/registry.json" 2>/dev/null) =="
 echo "== agents =="
+if jq -e '.drover' "$h/registry.json" > /dev/null 2>&1; then
+  st=$(jq -r '"\(.state) \(.at)"' "$h/status/drover.json" 2>/dev/null || echo "-")
+  printf '%-16s %-8s %-12s %-12s %-28s %s\n' drover "$(jq -r .drover.model "$h/registry.json")" drover - "$st" "orchestrator"
+fi
 jq -r '.agents | to_entries[] | "\(.key)\t\(.value.model // "-")\t\(.value.tab_name // "-")\t\(.value.pane_id)\t\(.value.purpose)"' "$h/registry.json" 2>/dev/null |
 while IFS=$'\t' read -r id model tab pane purpose; do
   st=$(jq -r '"\(.state) \(.at)"' "$h/status/$id.json" 2>/dev/null || echo "-")
