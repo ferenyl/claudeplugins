@@ -10,7 +10,7 @@ Installs a `SessionStart` hook that reloads active sessions after `/clear`, comp
 
 ## Skill: `drover`
 
-Starts a drover that herds a team of Claude agents. It creates a dedicated Zellij session (`corral-<name>-<id>`) with the drover itself running in its own Claude in the `drover` tab (default model `opus`), starts Claude agents with any purpose in tabs or panes, keeps track of them (even after `/clear`) and relays communication between them. Agents can also talk to each other directly. Work is broken down into bounded tasks with dependencies, reviewed by a separate agent and reported back.
+Starts a drover that herds a team of Claude agents. It creates a dedicated Zellij session (`corral-<name>-<id>`) with the drover itself running in its own Claude in the `drover` tab (default model `opus`), starts Claude agents with any purpose in tabs or panes, keeps track of them (even after `/clear`) and relays communication between them. Agents can also talk to each other directly. Work is broken down into bounded tasks with dependencies, reviewed against acceptance criteria and reported back.
 
 **Invocation**
 
