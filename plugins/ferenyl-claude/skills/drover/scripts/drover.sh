@@ -162,7 +162,7 @@ launch() { # id where cwd model -- claude-args...
 
 kq() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; } # KDL string
 
-tab_template() { # default_tab_template body from the user's default layout (bare `pane` -> children); TPL_STOCK=1: stock bars
+tab_template() { # tab template body from the user's default layout (bare `pane` -> children); TPL_STOCK=1: stock bars
   local f="$HOME/.config/zellij/layouts/default.kdl"
   if [[ ${TPL_STOCK:-} != 1 && -f $f ]] && grep -qE '^[[:space:]]*pane[[:space:]]*$' "$f"; then
     awk 'NR==FNR { if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) last = FNR; next }
@@ -175,17 +175,19 @@ tab_template() { # default_tab_template body from the user's default layout (bar
 }
 
 write_layout() { # corral.kdl (whole session), corral-tab.kdl / drover-tab.kdl (single tab, for new-tab --layout)
-  local h="$ROOT/$HID" tpl dash dcwd corral drover=
-  tpl=$(tab_template)
+  # Only the corral tab gets the user's template: third-party bar plugins in every agent tab each take every
+  # `zellij pipe` from the agents' hooks and stall the server. Drover and agent tabs get the stock bars.
+  local h="$ROOT/$HID" tpl full dash dcwd corral drover=
+  tpl=$(TPL_STOCK=1 tab_template) full=$(tab_template)
   dash=$(kq "$DIR/drover-dashboard.sh $HID")
   dcwd=$(kq "$(jq -r '.drover_cwd' "$(reg)")")
-  corral=$(printf '    tab name="corral" {\n        pane name="corral" command="watch" {\n            args "-t" "-n2" %s\n        }\n    }' "$dash")
+  corral=$(printf '    corral_tab name="corral" {\n        pane name="corral" command="watch" {\n            args "-t" "-n2" %s\n        }\n    }' "$dash")
   if [[ $(jq -r '.drover.mode // empty' "$(reg)") == corral ]]; then
     drover=$(printf '    tab name="drover" focus=true cwd=%s {\n        pane name="drover" command="bash" close_on_exit=true focus=true {\n            args %s\n        }\n    }' "$dcwd" "$(kq "$h/drover-launch.sh")")
     printf 'layout {\n    default_tab_template {\n%s\n    }\n%s\n}\n' "$tpl" "$drover" > "$h/drover-tab.kdl"
   fi
-  printf 'layout {\n    default_tab_template {\n%s\n    }\n%s\n}\n' "$tpl" "$corral" > "$h/corral-tab.kdl"
-  printf 'layout {\n    default_tab_template {\n%s\n    }\n%s\n%s\n}\n' "$tpl" "$corral" "$drover" > "$h/corral.kdl"
+  printf 'layout {\n    default_tab_template {\n%s\n    }\n    tab_template name="corral_tab" {\n%s\n    }\n%s\n}\n' "$tpl" "$full" "$corral" > "$h/corral-tab.kdl"
+  printf 'layout {\n    default_tab_template {\n%s\n    }\n    tab_template name="corral_tab" {\n%s\n    }\n%s\n%s\n}\n' "$tpl" "$full" "$corral" "$drover" > "$h/corral.kdl"
 }
 
 write_drover_files() { # settings, launcher and prompts of the in-corral drover

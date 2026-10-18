@@ -46,7 +46,6 @@ Two failed attempts → suggest next larger (max opus).
 1 Plan in tasks.json `{id,title,acceptance[],depends_on[],owner,state,attempts}`; show agents+models first.
 2 Dispatch only tasks whose deps are `done`; one task per agent.
 3 Wait: first catch up once (`tail -n 20` of inbox/drover.log, `status`, reports/), then Monitor `tail -n0 -F ~/.claude/drover/<HID>/inbox/drover.log`; read reports/<id>.md.
-4 Review via a separate agent against `acceptance`; send back only relevant findings.
-5 Max 3 attempts, then ask the user.
-6 Several coding agents in one git repo → one `git worktree` per agent as cwd; ask before merging.
-7 Report briefly on state change or when a decision is needed.
+4 Max 3 attempts, then ask the user.
+5 Several coding agents in one git repo → one `git worktree` per agent as cwd; ask before merging.
+6 Report briefly on state change or when a decision is needed.
