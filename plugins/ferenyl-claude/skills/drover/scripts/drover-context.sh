@@ -31,6 +31,7 @@ if [[ -n ${DROVER_HID:-} ]]; then # this pane is the drover of one corral: look 
   [[ -f $r ]] || exit 0
   old=$(jq -r '.drover.session_id // empty' "$r")
   if [[ -n $sid && -n $tp && ( $src == clear || $src == compact || $old == "$sid" ) ]]; then
+    # shellcheck disable=SC2016
     regset "$r" "$r" --arg i "$sid" --arg t "$tp" '.drover.session_id = $i | .drover.transcript = $t'
     [[ $src != clear && $src != compact ]] || bash "$(dirname "$0")/drover-title.sh" "$tp" "$sid" "drover-$(jq -r .slug "$r")-$(jq -r .id "$r")"
   elif [[ $src == resume && -n $old && $old != "$sid" ]]; then
@@ -55,6 +56,7 @@ for r in "$D"/*/registry.json; do
   h=$(dirname "$r")
   old=$(jq -r '.drover_session_id // empty' "$r")
   if [[ -n $sid && -n $tp && ( $src == clear || $src == compact || -z $old || $old == "$sid" ) ]]; then
+    # shellcheck disable=SC2016
     regset "$r" "$r" --arg i "$sid" --arg t "$tp" '.drover_session_id = $i | .drover_transcript = $t'
     [[ $old == "$sid" ]] || bash "$(dirname "$0")/drover-title.sh" "$tp" "$sid" "drover-$(jq -r .slug "$r")-$(jq -r .id "$r")"
   fi

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # drover-dashboard.sh <drover-id>
 h="$HOME/.claude/drover/$1"
-echo "== $(jq -r .session "$h/registry.json" 2>/dev/null) =="
+s=$(jq -r .session "$h/registry.json" 2>/dev/null)
+echo "== $s ==  zellij attach $s  (detach: Ctrl-o d)"
 echo "== agents =="
 if jq -e '.drover' "$h/registry.json" > /dev/null 2>&1; then
   st=$(jq -r '"\(.state) \(.at)"' "$h/status/drover.json" 2>/dev/null || echo "-")
