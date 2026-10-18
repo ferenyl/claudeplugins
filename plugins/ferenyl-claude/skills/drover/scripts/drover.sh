@@ -29,6 +29,11 @@ guard_outside() { # the drover lives in its corral; other sessions must not driv
   inside || die "drover lives in $(sess); attach (zellij attach $(sess)) or pass --force"
 }
 agent() { jq -r --arg a "$1" ".agents[\$a].$2 // empty" "$(reg)"; }
+repo_root() { git -C "$(jq -r .project "$(reg)")" rev-parse --show-toplevel 2> /dev/null; }
+wt_dir() { # one folder per corral beside the repo: <parent>/droverworktrees/<repo>-<HID>
+  local r; r=$(repo_root) || return 1
+  echo "$(dirname "$r")/droverworktrees/$(basename "$r")-$HID"
+}
 state() { jq -r '.state // "unknown"' "$ROOT/$HID/status/$1.json" 2>/dev/null || echo unknown; }
 banner() {
   local s
@@ -416,6 +421,26 @@ case $cmd in
     echo "$id -> $pane (tab $tab)"
     banner
     ;;
+  worktree) # worktree <hid> <id> [base] — prints the path to use as spawn cwd
+    HID=$1 id=$2 base=${3:-HEAD}
+    guard_outside
+    d=$(wt_dir) || die "project is not a git repo"
+    mkdir -p "$d"
+    git -C "$(repo_root)" worktree add -b "drover/$HID/$id" "$d/$id" "$base" > /dev/null
+    echo "$d/$id"
+    ;;
+  worktrees) # worktrees <hid> — path, branch, dirty|clean
+    HID=$1
+    d=$(wt_dir) || exit 0
+    [[ -d $d ]] || exit 0
+    for w in "$d"/*/; do
+      [[ -d $w ]] || continue
+      w=${w%/}
+      b=$(git -C "$w" branch --show-current 2> /dev/null)
+      [[ -n $(git -C "$w" status --porcelain 2> /dev/null) ]] && st=dirty || st=clean
+      echo "$w $b $st"
+    done
+    ;;
   kill) # kill <hid> <id>
     HID=$1 id=$2
     guard_outside
@@ -494,9 +519,10 @@ case $cmd in
     "$DIR/drover-dashboard.sh" "$HID"
     banner
     ;;
-  close) # close <hid> — detached: the drover may live inside the session it kills
+  close) # close <hid> [--remove-worktrees] — detached: the drover may live inside the session it kills
     HID=$1 s=$(sess) h="$ROOT/$HID"
-    jset --argjson t "$(date +%s)" '.closing_at = $t'
+    [[ ${2:-} == --remove-worktrees ]] && rmwt=true || rmwt=false
+    jset --argjson t "$(date +%s)" --argjson w "$rmwt" '.closing_at = $t | .remove_worktrees = $w'
     rm -f "$h/close.done"
     "$DIR/drover-ghost.sh" stop "$HID"
     echo "closing $s"
@@ -525,7 +551,14 @@ case $cmd in
       pkill -KILL -f "$pat" || true
     fi
     timeout 10 zellij delete-session "$s" 2> /dev/null || true
-    jset '.closed = true | .shutdown = true | del(.closing_at) | .agents = {}'
+    if jq -e '.remove_worktrees == true' "$(reg)" > /dev/null && d=$(wt_dir) && [[ -d $d ]]; then
+      for w in "$d"/*/; do
+        [[ -d $w ]] && git -C "$(repo_root)" worktree remove --force "${w%/}" || true
+      done
+      git -C "$(repo_root)" worktree prune || true
+      rmdir "$d" "$(dirname "$d")" 2> /dev/null || true
+    fi
+    jset '.closed = true | .shutdown = true | del(.closing_at) | del(.remove_worktrees) | .agents = {}'
     touch "$h/close.done"
     echo "shut down: $s"
     command -v notify-send > /dev/null && notify-send "drover: $s shut down" || true
@@ -545,5 +578,5 @@ case $cmd in
       command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
     fi
     ;;
-  *) die "commands: new spawn send model move kill rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn send model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac

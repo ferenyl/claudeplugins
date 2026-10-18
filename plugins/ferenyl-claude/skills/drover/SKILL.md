@@ -16,16 +16,18 @@ drover.sh send <HID> <to> drover "<msg>"
 drover.sh model <HID> <id> <model>        # waits for idle
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
 drover.sh kill <HID> <id>
+drover.sh worktree <HID> <id> [base]      # git worktree + branch drover/<HID>/<id>, prints path (spawn cwd)
+drover.sh worktrees <HID>                 # path branch dirty|clean
 drover.sh rename <HID> <slug>
 drover.sh flush <HID> <id>              # deliver messages queued while the agent was blocked
 drover.sh read <HID> <id> [lines]         # agent's screen (default 40 lines)
 drover.sh revive <HID>                    # session dead: recreate and relaunch agents with --resume
 drover.sh status <HID>                    # agents, tasks, messages; state busy|idle|blocked
-drover.sh close <HID>                     # ends the whole session
+drover.sh close <HID> [--remove-worktrees] # ends the whole session
 ```
 
 - `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `sonnet` (`--model opus` for large or unclear projects). After `new` tell the user to attach (`zellij attach <session>`) and stop: this session can be closed.
-- Mutating commands (spawn/model/move/kill/rename/flush) refuse from outside the drover pane unless `--force` is given right after the id (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
+- Mutating commands (spawn/model/move/kill/worktree/rename/flush) refuse from outside the drover pane unless `--force` is given right after the id (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice verbatim; else propose 2–4 kebab words in the plan. `rename` on request (ask first if the focus seems changed).
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
@@ -33,6 +35,7 @@ drover.sh close <HID>                     # ends the whole session
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - End replies after new/spawn/move/model/rename/status with the printed session block.
 - "Close/stop the agents" = `kill` each agent; the session and the drover stay. `close` only when the user explicitly says to end the session/corral.
+- Before `close`: if `worktrees` lists any, show them (mark dirty ones) and ask whether to delete them; yes → `close <HID> --remove-worktrees` (forced removal after the session is gone; branches are kept).
 - `close` stops the ghost, then a detached runner kills the zellij session and waits for its server to exit (SIGTERM/SIGKILL fallback); the drover inside exits with the session. Every zellij CLI call has a 10s timeout so a hung server cannot block commands.
 - Tabs: `corral` (dashboard only) is always position 0, `drover` position 1, both tracked by stored tab id and restored after a recreate or a user move. The watcher recreates only the dashboard; `revive` recreates the drover tab (`--resume` of its session). A closed drover tab is announced once in the inbox.
 - HID is permanent. The drover session is titled `drover-<slug>-<HID>` at launch; `rename` retitles it (the hook reapplies it after /clear|compact).
@@ -48,7 +51,7 @@ Two failed attempts → suggest next larger (max opus).
 2 Dispatch only tasks whose deps are `done`; one task per agent.
 3 Wait: first catch up once (`tail -n 20` of inbox/drover.log, `status`, reports/), then Monitor `tail -n0 -F ~/.claude/drover/<HID>/inbox/drover.log`; on `done:` read only reports/<id>.md.
 4 Max 3 attempts, then ask the user.
-5 Several coding agents in one git repo → one `git worktree` per agent as cwd; ask before merging.
+5 Several coding agents in one git repo → one worktree per agent via `worktree` (never `git worktree add` yourself; all go under `<repo-parent>/droverworktrees/`), its path as spawn cwd; ask before merging.
 6 Report briefly on state change or when a decision is needed.
 
 ## Token economy
