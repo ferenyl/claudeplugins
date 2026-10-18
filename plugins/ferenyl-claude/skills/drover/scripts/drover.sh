@@ -124,13 +124,13 @@ Only do what is within your purpose.
 
 Agents (live list, read only if you need to message someone): $h/registry.json
 
-You may and should talk directly to each other when needed:
+Messages cost the receiver a full turn: send one only when you are blocked on another agent or have a finished result it needs. No progress updates, acks or thanks; do not reply to a message unless it asks something.
 $DIR/drover.sh send $HID <to-id|drover> $id "<one-line message>"
 Longer content: write a file in $h and send the path.
 
-When a task is done: write $h/reports/$id.md
+When a task is done: write $h/reports/$id.md (max 10 lines)
   task: <id> | status: done|blocked|failed | changed: <files> | summary: <1-3 lines> | open: <questions>
-and send "done: <task-id>" to drover.
+and send exactly one message "done: <task-id>" to drover. Then stop and wait.
 EOF
   jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" '{permissions: {allow: ["Bash(\($d)/drover.sh send *)"]}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
@@ -330,7 +330,7 @@ case $cmd in
   new) # new <slug> <project-dir> [--model M] [--brief FILE] [--fork]
     slug=$1 proj=$(realpath "$2")
     shift 2
-    model=opus brief= fork=false
+    model=sonnet brief= fork=false
     while (($#)); do
       case $1 in
         --model) model=${2:?--model needs a value}; shift 2 ;;
