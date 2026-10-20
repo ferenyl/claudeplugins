@@ -19,6 +19,7 @@ drover.sh kill <HID> <id>
 drover.sh worktree <HID> <id> [base]      # git worktree + branch drover/<HID>/<id>, prints path (spawn cwd)
 drover.sh worktrees <HID>                 # path branch dirty|clean
 drover.sh rename <HID> <slug>
+drover.sh task <HID> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"]
 drover.sh task <HID> set <task-id> state=S owner=O [attempts+]   # prints hints at 2/3 attempts
 drover.sh task <HID> next                 # tasks ready to dispatch (deps done)
 drover.sh catchup <HID>                   # inbox tail, status, reports newest first
@@ -51,7 +52,7 @@ haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: 
 `task set` hints when to suggest the next larger model (max opus) and when to ask the user.
 
 ## Workflow
-1 Plan: write tasks.json once `{id,title,acceptance[],depends_on[],owner,state,attempts}`; show agents+models first. After that change it only with `task set` (state todo|in_progress|done|failed, `attempts+` on each dispatch).
+1 Plan: show agents+models first. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; change it afterwards only with `task set` (state todo|in_progress|done|failed): in_progress + `attempts+` on dispatch, done/failed on report.
 2 Dispatch only what `task next` lists; one task per agent.
 3 Wait: `catchup` once, then Monitor `drover.sh inbox <HID>`; on `report: <task> <status>` read only reports/<agent>.md.
 4 Follow the `task set` hints (ask the user after 3 attempts).

@@ -420,13 +420,34 @@ case $cmd in
     send drover "$id" "report: $tid $st"
     echo "reported: $tid $st"
     ;;
-  task) # task <hid> set <task-id> key=value... attempts+ | task <hid> next
+  task) # task <hid> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"] | set <task-id> key=value... attempts+ | next
     HID=$1 t="$ROOT/$HID/tasks.json"
     case ${2:-} in
       next) # not done, not running, all deps done
         jq -r '[.[] | select(.state == "done") | .id] as $d | .[]
           | select(.state != "done" and .state != "in_progress" and all(.depends_on[]?; IN($d[])))
           | "\(.id)\t\(.owner // "-")\t\(.title)"' "$t"
+        ;;
+      add)
+        guard_outside
+        tid=${3:?task id} title=${4:?title}
+        shift 4
+        [[ -f $t ]] || echo '[]' > "$t"
+        jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$t" > /dev/null && die "task exists: $tid"
+        owner='' dep='' acc=''
+        for kv in "$@"; do
+          case $kv in
+            owner=*) owner=${kv#*=} ;;
+            depends=*) dep=${kv#*=} ;;
+            accept=*) acc=${kv#*=} ;;
+            *) die "expected owner=O depends=a,b accept=\"x;y\": $kv" ;;
+          esac
+        done
+        # shellcheck disable=SC2016
+        tset --arg i "$tid" --arg ti "$title" --arg o "$owner" --arg d "$dep" --arg a "$acc" \
+          '. + [{id: $i, title: $ti, acceptance: ($a | split(";") | map(select(. != ""))), depends_on: ($d | split(",") | map(select(. != ""))),
+            owner: (if $o == "" then null else $o end), state: "todo", attempts: 0}]'
+        echo "$tid todo"
         ;;
       set)
         guard_outside
@@ -452,7 +473,7 @@ case $cmd in
           echo "hint: suggest the next larger model"
         fi
         ;;
-      *) die "task <HID> set <task-id> key=value... [attempts+] | task <HID> next" ;;
+      *) die "task <HID> add <id> \"<title>\" [owner=O] [depends=a,b] [accept=\"x;y\"] | task <HID> set <task-id> key=value... [attempts+] | task <HID> next" ;;
     esac
     ;;
   catchup) # catchup <hid> — recent inbox, dashboard, reports newest first
