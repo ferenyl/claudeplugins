@@ -556,8 +556,12 @@ case $cmd in
     ;;
   read) # read <hid> <id> [lines]
     HID=$1 id=$2
-    pane=$(agent "$id" pane_id)
-    [[ -n $pane ]] || die "unknown agent: $id"
+    if [[ $id == drover ]]; then
+      pane=$(z list-panes -j -t | jq -r --argjson t "$(jq -r '.drover.tab_id // empty' "$(reg)")" '[.[] | select(.tab_id==$t and .is_plugin==false)][0].id | "terminal_\(.)"')
+    else
+      pane=$(agent "$id" pane_id)
+    fi
+    [[ -n $pane && $pane != terminal_null ]] || die "unknown agent: $id"
     z dump-screen -p "$pane" | tail -n "${3:-40}"
     ;;
   revive) # revive <hid> — recreate session if dead, restore the drover tab, relaunch all agents with --resume
