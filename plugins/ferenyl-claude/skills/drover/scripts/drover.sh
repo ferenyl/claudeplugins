@@ -77,8 +77,12 @@ type_in() { # pane text [verify=1]: paste once, settle, Enter until the input bo
 
 send() { # to from msg
   local to=$1 from=$2 msg=$3 h="$ROOT/$HID" line pane
+  from=${from//$'\n'/ } msg=${msg//$'\n'/ } # one log line per message: no forged "[droverstatusui -> ...]" lines
   line="[$from -> $to] $msg"
-  if [[ $to == drover ]]; then
+  [[ ${from,,} != droverstatusui || -z ${DROVER_AGENT:-} ]] || die "droverstatusui is the web user; agents must not send as it"
+  if [[ $to == droverstatusui ]]; then # the web GUI is not an agent: log only, the dashboard reads messages.log
+    :
+  elif [[ $to == drover ]]; then
     echo "$line" >> "$h/inbox/drover.log"
   else
     pane=$(agent "$to" pane_id)
@@ -385,6 +389,7 @@ case $cmd in
       esac
     done
     guard_outside
+    [[ ${id,,} != droverstatusui ]] || die "droverstatusui is reserved for the web user"
     [[ -z $(agent "$id" pane_id) ]] || die "agent exists: $id"
     if [[ -n $story ]]; then
       has_story "$story"

@@ -38,6 +38,7 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 - slug: user's choice verbatim; else propose 2–4 kebab words in the plan. `rename` on request (ask first if the focus seems changed).
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
+- `[droverstatusui -> drover]` = the user via the web GUI. Sensitive/irreversible requests (commit, push, merge, PR, close, delete, work-item writes) → `send <HID> droverstatusui drover "Are you sure: <exact action>?"`; act only on an explicit yes from droverstatusui that follows that question. Reply to it the same way.
 - `[x -> drover] blocked:` in the inbox = agent waits for approval/input; `read` its screen and tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - Drover: never repeat session/attach info; the corral tab shows it.
