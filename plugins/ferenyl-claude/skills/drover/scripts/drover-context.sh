@@ -39,6 +39,7 @@ if [[ -n ${DROVER_HID:-} ]]; then # this pane is the drover of one corral: look 
   fi
   jq -r '"Active drover \(.id), session \(.session) — you are the drover, use /ferenyl-claude:drover."' "$r"
   agents "$r"
+  [[ ! -f $D/$DROVER_HID/stories.json ]] || echo "Story mode: read $(cd "$(dirname "$0")/.." && pwd)/story.md; stories: drover.sh story $DROVER_HID list"
   exit 0
 fi
 for r in "$D"/*/registry.json; do

@@ -15,5 +15,9 @@ while IFS=$'\t' read -r id model tab pane purpose; do
 done
 echo; echo "== tasks =="
 jq -r '.[]? | "\(.id)\t\(.state)\t\(.owner // "-")\t\(.title)"' "$h/tasks.json" 2>/dev/null | column -t -s $'\t'
+if [[ -f $h/stories.json ]]; then
+  echo; echo "== stories =="
+  "$(dirname "$0")/drover-story.sh" "$1" list 2>/dev/null
+fi
 echo; echo "== recent messages =="
 tail -n 8 "$h/messages.log" 2>/dev/null

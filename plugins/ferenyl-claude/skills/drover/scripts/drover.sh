@@ -11,27 +11,21 @@ CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPO
 # Agent panes keep theirs (set by zellij itself), the status hook needs them.
 SERVER_ENV=("${CLEAN_ENV[@]}" -u DROVER_AGENT -u ZELLIJ -u ZELLIJ_SESSION_NAME -u ZELLIJ_PANE_ID)
 
-die() { echo "$*" >&2; exit 1; }
+# shellcheck source=lib.sh
+. "$DIR/lib.sh"
 reg() { echo "$ROOT/$HID/registry.json"; }
 sess() { jq -r .session "$(reg)"; }
 z() { timeout 10 zellij -s "$(sess)" action "$@"; }
 jset() { jfile "$(reg)" "$@"; }
 tset() { jfile "$ROOT/$HID/tasks.json" "$@"; }
-jfile() { # file jq-args...: several writers (close, watcher, hooks): serialize on a lock, write via a private temp file
-  local f=$1; shift
-  (
-    flock 8
-    local t; t=$(mktemp "$f.XXXXXX")
-    # shellcheck disable=SC2015
-    jq "$@" "$f" > "$t" && mv "$t" "$f" || { rm -f "$t"; exit 1; }
-  ) 8> "$f.lock"
-}
 inside() { [[ ${DROVER_HID:-} == "$HID" ]]; }
 guard_outside() { # the drover lives in its corral; other sessions must not drive it
   [[ $FORCE == 1 || $(jq -r '.drover.mode // empty' "$(reg)") != corral ]] && return 0
   inside || die "drover lives in $(sess); attach (zellij attach $(sess)) or pass --force"
 }
 agent() { jq -r --arg a "$1" ".agents[\$a].$2 // empty" "$(reg)"; }
+story_derive() { [[ ! -f $ROOT/$HID/stories.json ]] || "$DIR/drover-story.sh" "$HID" derive || true; }
+has_story() { jq -e --arg s "$1" 'any(.[]; .id == $s)' "$ROOT/$HID/stories.json" > /dev/null 2>&1 || die "unknown story: $1"; }
 repo_root() { git -C "$(jq -r .project "$(reg)")" rev-parse --show-toplevel 2> /dev/null; }
 wt_dir() { # one folder per corral beside the repo: <parent>/droverworktrees/<repo>-<HID>
   local r; r=$(repo_root) || return 1
@@ -125,7 +119,7 @@ close_agent_pane() { # id
   tab_empty "$tab" && z close-tab-by-id "$tab" 2> /dev/null || true
 }
 
-write_files() { # id purpose
+write_files() { # id purpose [story]
   local id=$1 purpose=$2 h="$ROOT/$HID"
   cat > "$h/agents/$id.prompt.md" <<EOF
 You are agent $id in drover $HID. Purpose: $purpose
@@ -141,6 +135,7 @@ When a task is done (or you cannot finish it), report once; this writes $h/repor
 $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
 Then stop and wait.
 EOF
+  [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
   jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" '{permissions: {allow: ["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)"]}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
@@ -379,20 +374,33 @@ case $cmd in
     banner
     echo "The drover runs inside the corral (tab drover). Attach with the command above; this session can be closed."
     ;;
-  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust]
-    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust=${8:-}
+  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>]
+    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story=''
+    shift 7
+    while (($#)); do
+      case $1 in
+        --trust) trust=--trust; shift ;;
+        --story) story=${2:?--story needs a story id}; shift 2 ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
     guard_outside
     [[ -z $(agent "$id" pane_id) ]] || die "agent exists: $id"
+    if [[ -n $story ]]; then
+      has_story "$story"
+      [[ $id == "$story"-* ]] || die "a story agent's id starts with $story-"
+    fi
     if ! trusted "$cwd" && [[ $trust != --trust ]]; then
       echo "UNTRUSTED $cwd — ask the user, then run again with --trust" >&2; exit 3
     fi
-    write_files "$id" "$purpose"
+    write_files "$id" "$purpose" "$story"
     csid=$(cat /proc/sys/kernel/random/uuid)
     read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" "$task")
     # shellcheck disable=SC2015,SC2016
     jset --arg a "$id" --arg p "$purpose" --arg m "$model" --argjson t "$tab" --arg pn "$pane" \
-      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" \
-      '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}'
+      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" \
+      '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}
+        + if $s == "" then {} else {story: $s} end'
     if [[ $trust == --trust ]] && ! trusted "$cwd"; then
       sleep 4
       z send-keys -p "$pane" Down Enter
@@ -418,9 +426,10 @@ case $cmd in
     [[ $st =~ ^(done|blocked|failed)$ ]] || die "status must be done|blocked|failed"
     printf 'task: %s | status: %s | changed: %s | summary: %s | open: %s\n' "$tid" "$st" "$changed" "$sum" "$open" > "$ROOT/$HID/reports/$id.md"
     send drover "$id" "report: $tid $st"
+    story_derive > /dev/null
     echo "reported: $tid $st"
     ;;
-  task) # task <hid> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"] | set <task-id> key=value... attempts+ | next
+  task) # task <hid> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"] [story=S] [kind=K] | set <task-id> key=value... attempts+ | next
     HID=$1 t="$ROOT/$HID/tasks.json"
     case ${2:-} in
       next) # not done, not running, all deps done
@@ -434,20 +443,27 @@ case $cmd in
         shift 4
         [[ -f $t ]] || echo '[]' > "$t"
         jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$t" > /dev/null && die "task exists: $tid"
-        owner='' dep='' acc=''
+        owner='' dep='' acc='' story='' kind=''
         for kv in "$@"; do
           case $kv in
             owner=*) owner=${kv#*=} ;;
             depends=*) dep=${kv#*=} ;;
             accept=*) acc=${kv#*=} ;;
-            *) die "expected owner=O depends=a,b accept=\"x;y\": $kv" ;;
+            story=*) story=${kv#*=} ;;
+            kind=*) kind=${kv#*=} ;;
+            *) die "expected owner=O depends=a,b accept=\"x;y\" story=S kind=plan|impl|review|pr: $kv" ;;
           esac
         done
+        [[ -z $kind || $kind =~ ^(plan|impl|review|pr)$ ]] || die "kind must be plan|impl|review|pr"
+        [[ -n $story || -z $owner ]] || story=$(agent "$owner" story) # a story agent's tasks belong to its story
+        [[ -z $story ]] || has_story "$story"
         # shellcheck disable=SC2016
-        tset --arg i "$tid" --arg ti "$title" --arg o "$owner" --arg d "$dep" --arg a "$acc" \
+        tset --arg i "$tid" --arg ti "$title" --arg o "$owner" --arg d "$dep" --arg a "$acc" --arg s "$story" --arg k "$kind" \
           '. + [{id: $i, title: $ti, acceptance: ($a | split(";") | map(select(. != ""))), depends_on: ($d | split(",") | map(select(. != ""))),
-            owner: (if $o == "" then null else $o end), state: "todo", attempts: 0}]'
-        echo "$tid todo"
+            owner: (if $o == "" then null else $o end), state: "todo", attempts: 0}
+            + (if $s == "" then {} else {story: $s} end) + (if $k == "" then {} else {kind: $k} end)]'
+        story_derive > /dev/null
+        echo "$tid todo${story:+ (story $story)}"
         ;;
       set)
         guard_outside
@@ -465,6 +481,7 @@ case $cmd in
         # shellcheck disable=SC2016
         tset --arg i "$tid" --argjson s "$sets" --argjson inc "$inc" \
           '(.[] | select(.id == $i)) |= (. + $s | if $inc then .attempts = ((.attempts // 0) + 1) else . end)'
+        story_derive > /dev/null
         jq -r --arg i "$tid" '.[] | select(.id == $i) | "\(.id) \(.state) \(.owner // "-") attempts \(.attempts // 0)"' "$t"
         a=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .attempts // 0' "$t")
         if ((a >= 3)); then
@@ -510,7 +527,7 @@ case $cmd in
     sid=${sid:-$(agent "$id" claude_session_id)}
     cwd=$(agent "$id" cwd) model=$(agent "$id" model)
     close_agent_pane "$id"
-    write_files "$id" "$(agent "$id" purpose)"
+    write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
     read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --resume "$sid")
     # shellcheck disable=SC2015
     tn=$([[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)
@@ -520,12 +537,21 @@ case $cmd in
     echo "$id -> $pane (tab $tab)"
     banner
     ;;
-  worktree) # worktree <hid> <id> [base] — prints the path to use as spawn cwd
-    HID=$1 id=$2 base=${3:-HEAD}
+  worktree) # worktree <hid> <id> [base] [--story <sid>] — prints the path to use as spawn cwd
+    HID=$1 id=$2 base=HEAD story=''
+    shift 2
+    while (($#)); do
+      case $1 in
+        --story) story=${2:?--story needs a story id}; shift 2 ;;
+        *) base=$1; shift ;;
+      esac
+    done
     guard_outside
+    [[ -z $story ]] || has_story "$story"
     d=$(wt_dir) || die "project is not a git repo"
     mkdir -p "$d"
     git -C "$(repo_root)" worktree add -b "drover/$HID/$id" "$d/$id" "$base" > /dev/null
+    [[ -z $story ]] || "$DIR/drover-story.sh" "$HID" set "$story" branch="drover/$HID/$id" worktree="$d/$id" > /dev/null
     echo "$d/$id"
     ;;
   worktrees) # worktrees <hid> — path, branch, dirty|clean
@@ -546,6 +572,7 @@ case $cmd in
     close_agent_pane "$id"
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a])'
+    story_derive > /dev/null
     echo "closed: $id"
     banner
     ;;
@@ -612,7 +639,7 @@ case $cmd in
       [[ -z $(z list-panes -j -t | jq -r --arg p "$(agent "$id" pane_id)" '.[] | select("terminal_\(.id)" == $p) | .id') ]] || continue
       sid=$(jq -r '.session_id // empty' "$ROOT/$HID/status/$id.json" 2> /dev/null)
       sid=${sid:-$(agent "$id" claude_session_id)}
-      write_files "$id" "$(agent "$id" purpose)"
+      write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
       read -r tab pane < <(launch "$id" tab "$(agent "$id" cwd)" "$(agent "$id" model)" -- --resume "$sid")
       # shellcheck disable=SC2016
       jset --arg a "$id" --argjson t "$tab" --arg pn "$pane" --arg c "$sid" \
@@ -620,6 +647,11 @@ case $cmd in
       echo "revived: $id -> $pane"
     done
     banner
+    ;;
+  story) # story <hid> <command> ... — story mode, see story.md
+    HID=$1
+    case ${2:-} in list | show | derive | '') ;; *) guard_outside ;; esac
+    exec "$DIR/drover-story.sh" "$@"
     ;;
   status) # status <hid>
     HID=$1
@@ -700,5 +732,5 @@ case $cmd in
       command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
     fi
     ;;
-  *) die "commands: new spawn send report task catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn send report task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac
