@@ -12,6 +12,33 @@ Installs a `SessionStart` hook that reloads active sessions after `/clear`, comp
 
 Starts a drover that herds a team of Claude agents. It creates a dedicated Zellij session (`corral-<name>-<id>`) with the drover itself running in its own Claude in the `drover` tab (default model `opus`), starts Claude agents with any purpose in tabs or panes, keeps track of them (even after `/clear`) and relays communication between them. Agents can also talk to each other directly. Work is broken down into bounded tasks with dependencies, reviewed by a separate agent and reported back.
 
+```mermaid
+flowchart TB
+    user(["User"])
+    launcher["Launcher Claude<br/>/ferenyl-claude:drover"]
+    state[("~/.claude/drover/&lt;HID&gt;/<br/>registry.json · tasks.json · brief.md<br/>inbox/drover.log · reports/ · status/")]
+    ui["droverstatus<br/>(web UI, optional)"]
+
+    subgraph corral["Zellij session corral-&lt;slug&gt;-&lt;HID&gt;"]
+        dash["Tab 0: corral<br/>dashboard"]
+        drover["Tab 1: drover<br/>Claude drover-&lt;slug&gt;-&lt;HID&gt;"]
+        a1["Agent api-dev<br/>(tab)"]
+        a2["Agent tests<br/>(pane)"]
+    end
+
+    user -->|request| launcher
+    launcher -->|"drover.sh new --brief / --fork"| corral
+    user -.->|zellij attach| corral
+    drover -->|"drover.sh spawn · send · model · move · kill"| a1 & a2
+    drover -->|"task add / set"| state
+    a1 & a2 -->|"drover.sh report · send"| state
+    a1 <-->|"drover.sh send"| a2
+    state -->|"drover.sh inbox (Monitor)"| drover
+    state --> dash
+    ui -->|"reads state"| state
+    ui -->|"drover.sh send (droverstatusui)"| drover
+```
+
 **Invocation**
 
 ```
