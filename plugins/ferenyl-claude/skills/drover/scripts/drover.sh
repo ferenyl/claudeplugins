@@ -30,11 +30,15 @@ repo_root() { git -C "${REPO:-$(jq -r .project "$(reg)")}" rev-parse --show-topl
 repos() { # every repo this corral has worktrees in: the project's, then those given with worktree --repo
   { REPO='' repo_root || true; jq -r '.repos[]?' "$(reg)"; } | awk 'NF && !seen[$0]++'
 }
+branch_of() { jq -r --arg a "$1" --arg d "drover/$HID/$1" '.branches[$a] // $d' "$(reg)"; } # worktree --branch name, else drover/<HID>/<id>
+default_base() { # the repo's default branch (origin/HEAD), HEAD if unknown
+  git -C "$(repo_root)" symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null || echo HEAD
+}
 find_repo() { # id: set REPO to the repo holding the agent's worktree or branch, unless --repo was given
   local x
   [[ -z ${REPO:-} ]] || return 0
   for x in $(repos); do
-    if [[ -d $(REPO=$x wt_dir)/$1 ]] || git -C "$x" show-ref --verify --quiet "refs/heads/drover/$HID/$1"; then REPO=$x; return 0; fi
+    if [[ -d $(REPO=$x wt_dir)/$1 ]] || git -C "$x" show-ref --verify --quiet "refs/heads/$(branch_of "$1")"; then REPO=$x; return 0; fi
   done
 }
 wt_dir() { # one folder per corral beside the repo: <parent>/droverworktrees/<repo>-<HID>
@@ -158,7 +162,7 @@ Messages cost the receiver a full turn: send one only when you are blocked on an
 $DIR/drover.sh send $HID <to-id|drover> $id "<one-line message>"
 Longer content: write a file in $h and send the path.
 
-When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.md first; this records the result and tells the drover:
+When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.<task-id>.md first; this records the result and tells the drover:
 $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
 Then stop and wait.
 EOF
@@ -479,14 +483,17 @@ case $cmd in
       esac
     done
     [[ $st =~ ^(done|blocked|failed)$ ]] || die "status must be done|blocked|failed"
+    owner=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json" 2> /dev/null || true)
+    [[ -n $(agent "$id" pane_id) ]] || die "unknown agent id: $id${owner:+ (task $tid is owned by $owner: report $HID $owner $tid ...)}; agents: $(jq -r '.agents | keys | join(" ")' "$(reg)")"
+    [[ -z $owner || $owner == "$id" ]] || die "task $tid is owned by $owner, not $id: report $HID $owner $tid ..."
     known=true
     jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || known=false
     sum=${sum//[$'\n\r']/ } changed=${changed//[$'\n\r']/ } open=${open//[$'\n\r']/ }
     r="$ROOT/$HID/reports"
     now=$(date -u +%FT%TZ)
     # the agent's own detail survives; a previous one-liner is replaced
-    if [[ ! -s $r/$id.md ]] || { [[ $(wc -l < "$r/$id.md") -le 1 ]] && [[ $(head -c 6 "$r/$id.md") == "task: " ]]; }; then
-      printf 'task: %s | status: %s | changed: %s | summary: %s | open: %s\n' "$tid" "$st" "$changed" "$sum" "$open" > "$r/$id.md"
+    if [[ ! -s $r/$id.$tid.md ]] || { [[ $(wc -l < "$r/$id.$tid.md") -le 1 ]] && [[ $(head -c 6 "$r/$id.$tid.md") == "task: " ]]; }; then
+      printf 'task: %s | status: %s | changed: %s | summary: %s | open: %s\n' "$tid" "$st" "$changed" "$sum" "$open" > "$r/$id.$tid.md"
     fi
     # shellcheck disable=SC2016
     jq -nc --arg t "$tid" --arg s "$st" --arg m "$sum" --arg c "$changed" --arg o "$open" --arg at "$now" \
@@ -638,46 +645,54 @@ case $cmd in
     echo "$id -> $pane (tab $tab)"
     banner
     ;;
-  worktree) # worktree <hid> <id> [base] [--story <sid>] [--repo <path>] — prints the path to use as spawn cwd | worktree <hid> rm <id>
-    HID=$1 id=$2 base=HEAD story='' rm=false
+  worktree) # worktree <hid> <id> [base] [--branch <name>] [--story <sid>] [--repo <path>] — prints the path to use as spawn cwd | worktree <hid> rm <id>
+    HID=$1 id=$2 base='' story='' rm=false bn=''
     shift 2
     if [[ $id == rm ]]; then rm=true id=${1:?agent id}; shift; fi
     while (($#)); do
       case $1 in
         --repo) REPO=$(realpath "${2:?--repo needs a path}"); shift 2 ;;
         --story) story=${2:?--story needs a story id}; shift 2 ;;
+        --branch) bn=${2:?--branch needs a name}; shift 2 ;;
         *) base=$1; shift ;;
       esac
     done
     guard_outside
     [[ -z $story ]] || has_story "$story"
+    [[ -z $bn ]] || git check-ref-format --branch "$bn" > /dev/null || die "bad branch name: $bn"
     ! $rm || find_repo "$id"
     d=$(wt_dir) || die "project is not a git repo (pass --repo <path>)"
     # shellcheck disable=SC2016
     [[ -z ${REPO:-} ]] || jset --arg r "$REPO" '.repos = ((.repos // []) + [$r] | unique)'
     if $rm; then
-      git -C "$(repo_root)" worktree remove "$d/$id" || die "not removed (dirty? commit or discard first); the branch drover/$HID/$id is kept"
+      b=$(branch_of "$id")
+      git -C "$(repo_root)" worktree remove "$d/$id" || die "not removed (dirty? commit or discard first); the branch $b is kept"
+      # shellcheck disable=SC2016
+      jset --arg a "$id" 'del(.branches[$a])'
       rmdir "$d" 2> /dev/null || true
-      echo "removed $d/$id (branch kept)"
+      echo "removed $d/$id (branch $b kept)"
       exit 0
     fi
+    # shellcheck disable=SC2016
+    [[ -z $bn ]] || jset --arg a "$id" --arg b "$bn" '.branches = ((.branches // {}) + {($a): $b})'
+    b=$(branch_of "$id")
     mkdir -p "$d"
     if [[ -d $d/$id ]]; then :
-    elif git -C "$(repo_root)" show-ref --verify --quiet "refs/heads/drover/$HID/$id"; then # reuse the branch
-      git -C "$(repo_root)" worktree add "$d/$id" "drover/$HID/$id" > /dev/null
+    elif git -C "$(repo_root)" show-ref --verify --quiet "refs/heads/$b"; then # reuse the branch
+      git -C "$(repo_root)" worktree add "$d/$id" "$b" > /dev/null
     else
-      git -C "$(repo_root)" worktree add -b "drover/$HID/$id" "$d/$id" "$base" > /dev/null
+      git -C "$(repo_root)" worktree add -b "$b" "$d/$id" "${base:-$(default_base)}" > /dev/null
     fi
-    [[ -z $story ]] || "$DIR/drover-story.sh" "$HID" set "$story" branch="drover/$HID/$id" worktree="$d/$id" > /dev/null
+    [[ -z $story ]] || "$DIR/drover-story.sh" "$HID" set "$story" branch="$b" worktree="$d/$id" > /dev/null
     echo "$d/$id"
     ;;
-  merge) # merge <hid> <id> [--repo <path>] — merge drover/<hid>/<id> into the repo's checked-out branch; the drover asks the user first
+  merge) # merge <hid> <id> [--repo <path>] — merge the agent's branch into the repo's checked-out branch; the drover asks the user first
     HID=$1 id=${2:?agent id}
     [[ ${3:-} != --repo ]] || REPO=$(realpath "${4:?--repo needs a path}")
     guard_outside
     find_repo "$id"
     r=$(repo_root) || die "project is not a git repo (pass --repo <path>)"
-    b="drover/$HID/$id"
+    b=$(branch_of "$id")
     git -C "$r" show-ref --verify --quiet "refs/heads/$b" || die "no branch $b"
     [[ -z $(git -C "$r" status --porcelain --untracked-files=no) ]] || die "$r has uncommitted changes"
     d=$(wt_dir) && [[ ! -d $d/$id || -z $(git -C "$d/$id" status --porcelain) ]] || die "worktree $id has uncommitted changes"
@@ -729,7 +744,7 @@ case $cmd in
     fi
     close_agent_pane "$id"
     # shellcheck disable=SC2016
-    jset --arg a "$id" 'del(.agents[$a])'
+    jset --arg a "$id" 'del(.agents[$a], .branches[$a])'
     rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt"
     story_derive > /dev/null
     echo "closed: $id"

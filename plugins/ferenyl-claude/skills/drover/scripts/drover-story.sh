@@ -103,10 +103,9 @@ guess_tracker() { # tracker for bare numbers/queries: tracker= > repo= > project
 
 derive() { # auto status of every story without status_manual (contract table, first match wins)
   [[ -f $S ]] || return 0
-  local f n bl=()
-  for f in "$h"/status/*.json; do
-    n=$(basename "$f" .json) # a killed agent's leftover status must not pin its story
-    if [[ $(jq -r .state "$f" 2> /dev/null) == blocked ]] && jq -e --arg a "$n" '.agents | has($a)' "$h/registry.json" > /dev/null 2>&1; then bl+=("$n"); fi
+  local n bl=()
+  for n in $(jq -r '.agents | keys[]' "$h/registry.json"); do # registry agents only: a killed agent's leftover status must not pin its story
+    if [[ $(jq -r .state "$h/status/$n.json" 2> /dev/null) == blocked ]]; then bl+=("$n"); fi
   done
   # shellcheck disable=SC2016
   sset --slurpfile t "$h/tasks.json" --slurpfile r "$h/registry.json" --arg now "$(now)" \
@@ -134,6 +133,22 @@ list() {
     | .id as $i | [$tasks[] | select(.story == $i)] as $st
     | "\(.id)\t\(.status)\(if .status_manual then "*" else "" end)\t\([$st[] | select(.state == "done")] | length)/\($st | length)\t\(.pr.url // "-")\(if .pr then " (\(.pr.state)\(if .pr.review then ", \(.pr.review)" else "" end))" else "" end)\t\(.title)\(if .blocked then "  [blocked: \(.blocked)]" else "" end)"' "$S" |
     column -t -s $'\t'
+}
+
+pr_ref() { # sid url|number: the pr record of an existing PR (created by an agent via MCP)
+  local r j
+  r=$(remote "$(story "$1" worktree)")
+  [[ -n $r ]] || r=$(remote)
+  if [[ $2 =~ github\.com/([^/]+/[^/]+)/pull/([0-9]+) ]]; then
+    jq -nc --arg u "$2" --argjson n "${BASH_REMATCH[2]}" '{url: $u, number: $n, host: "github", state: "open", review: null}'
+  elif [[ $2 =~ /pullrequest/([0-9]+) ]]; then
+    jq -nc --arg u "$2" --argjson n "${BASH_REMATCH[1]}" '{url: $u, number: $n, host: "azure", state: "open", review: null}'
+  elif [[ $2 =~ ^#?([0-9]+)$ && -n $(gh_repo "$r") ]]; then
+    j=$(gh pr view "${BASH_REMATCH[1]}" -R "$(gh_repo "$r")" --json url,number) || die "gh pr view ${BASH_REMATCH[1]} failed"
+    jq -c '. + {host: "github", state: "open", review: null}' <<< "$j"
+  else
+    die "pr=<PR url> (a bare number works for github remotes only): $2"
+  fi
 }
 
 pr_sync() { # sid: refresh pr state/review from the host
@@ -246,11 +261,11 @@ case $cmd in
     jfile "$h/registry.json" --argjson m "$m" '.story_mode = ((.story_mode // {parallel: false}) + $m)'
     jq -c .story_mode "$h/registry.json"
     ;;
-  set) # set <sid> status=S|auto blocked="r"|- order=N clarify="text" branch=B worktree=W assignee=A (- = null)
+  set) # set <sid> status=S|auto blocked="r"|- order=N clarify="text" branch=B worktree=W assignee=A pr=<url|nr> (- = null)
     sid=${1:?sid}
     shift
     need "$sid"
-    sets='{}' clar=false
+    sets='{}' clar=false syncpr=false
     for kv; do
       k=${kv%%=*} v=${kv#*=}
       [[ $kv == *=* ]] || die "expected key=value: $kv"
@@ -264,6 +279,13 @@ case $cmd in
           ;;
         order) [[ $v =~ ^[0-9]+$ ]] || die "order must be a number"; sets=$(jq -c --argjson v "$v" '.order = $v' <<< "$sets") ;;
         blocked | branch | worktree | assignee) sets=$(jq -c --arg k "$k" --arg v "$v" '.[$k] = (if $v == "-" then null else $v end)' <<< "$sets") ;;
+        pr)
+          if [[ $v == - ]]; then sets=$(jq -c '.pr = null' <<< "$sets")
+          else
+            sets=$(jq -c --argjson p "$(pr_ref "$sid" "$v")" '.pr = $p' <<< "$sets")
+            syncpr=true
+          fi
+          ;;
         clarify)
           printf '\n## Clarification (%s)\n%s\n' "$(date +%F)" "$v" >> "$h/stories/$sid.md"
           clar=true
@@ -275,6 +297,7 @@ case $cmd in
     sset --arg i "$sid" --argjson s "$sets" --argjson c "$clar" --arg t "$(now)" 'map(if .id == $i then . + $s | .updated_at = $t
       | if $c then .clarified = true | (if .status_manual and .status == "waiting-for-user" then .status_manual = false else . end) else . end
       else . end)'
+    ! $syncpr || pr_sync "$sid"
     derive
     list | grep -E "^$sid " || true
     ;;
@@ -326,32 +349,36 @@ case $cmd in
     esac
     echo "commented on $sid"
     ;;
-  pr) # pr <sid> [--draft]: push the story branch, create the PR (or record an existing one)
-    sid=${1:?sid} draft=${2:-}
+  pr) # pr <sid> [--draft] [--title T] [--body-file F]: push the story branch, create the PR (or record an existing one); title/body per the instructions in effect
+    sid=${1:?sid}
+    shift
     need "$sid"
-    [[ -z $draft || $draft == --draft ]] || die "pr <sid> [--draft]"
+    draft='' title='' bodyf=''
+    while (($#)); do
+      case $1 in
+        --draft) draft=1; shift ;;
+        --title) title=${2:?--title needs a value}; shift 2 ;;
+        --body-file) bodyf=${2:?--body-file needs a file}; shift 2 ;;
+        *) die "pr <sid> [--draft] [--title T] [--body-file F]" ;;
+      esac
+    done
+    [[ -z $bodyf || -f $bodyf ]] || die "no such file: $bodyf"
     d=$(story "$sid" worktree)
     d=${d:-$(git -C "$(project)" rev-parse --show-toplevel)}
     b=$(story "$sid" branch)
     b=${b:-$(git -C "$d" branch --show-current)}
     [[ -n $b ]] || die "no branch for $sid: story set $sid branch=B"
-    t=$(story "$sid" title) k=$(story "$sid" key) src=$(story "$sid" source) r=$(remote "$d")
-    case $(story "$sid" tracker) in
-      github) if [[ $src == "$(gh_repo "$r")" ]]; then ref="Fixes #$k"; else ref="Fixes $src#$k"; fi ;;
-      azure) ref="AB#$k" ;;
-      jira) ref=$k ;;
-      *) ref= ;;
-    esac
+    t=${title:-$(story "$sid" title)} r=$(remote "$d")
     git -C "$d" push -u origin "$b"
     if [[ -n $(gh_repo "$r") ]]; then
       gh pr view "$b" -R "$(gh_repo "$r")" > /dev/null 2>&1 ||
-        gh pr create -R "$(gh_repo "$r")" --head "$b" --title "$t" --body "$ref" ${draft:+"--draft"} > /dev/null
+        gh pr create -R "$(gh_repo "$r")" --head "$b" --title "$t" --body-file "${bodyf:-/dev/null}" ${draft:+"--draft"} > /dev/null
       j=$(gh pr view "$b" -R "$(gh_repo "$r")" --json url,number,state,isDraft)
       p=$(jq -c '{url, number, host: "github", state: (if .isDraft then "draft" else (.state | ascii_downcase) end), review: null}' <<< "$j")
     elif [[ $r == *dev.azure.com* || $r == *visualstudio.com* ]]; then
-      wi=()
-      [[ $(story "$sid" tracker) != azure ]] || wi=(--work-items "$k")
-      j=$(cd "$d" && az repos pr create --detect true --source-branch "$b" --title "$t" --description "$ref" "${wi[@]}" --draft "$([[ -n $draft ]] && echo true || echo false)" -o json)
+      body=()
+      [[ -z $bodyf ]] || body=(--description "$(< "$bodyf")")
+      j=$(cd "$d" && az repos pr create --detect true --source-branch "$b" --title "$t" "${body[@]}" --draft "$([[ -n $draft ]] && echo true || echo false)" -o json)
       p=$(jq -c '{url: "\(.repository.webUrl)/pullrequest/\(.pullRequestId)", number: .pullRequestId, host: "azure",
         state: (if .isDraft then "draft" else "open" end), review: null}' <<< "$j")
     else
