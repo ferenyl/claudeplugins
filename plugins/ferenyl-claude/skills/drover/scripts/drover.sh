@@ -26,12 +26,22 @@ guard_outside() { # the drover lives in its corral; other sessions must not driv
 agent() { jq -r --arg a "$1" ".agents[\$a].$2 // empty" "$(reg)"; }
 story_derive() { [[ ! -f $ROOT/$HID/stories.json ]] || "$DIR/drover-story.sh" "$HID" derive || true; }
 has_story() { jq -e --arg s "$1" 'any(.[]; .id == $s)' "$ROOT/$HID/stories.json" > /dev/null 2>&1 || die "unknown story: $1"; }
-repo_root() { git -C "$(jq -r .project "$(reg)")" rev-parse --show-toplevel 2> /dev/null; }
+repo_root() { git -C "${REPO:-$(jq -r .project "$(reg)")}" rev-parse --show-toplevel 2> /dev/null; }
+repos() { # every repo this corral has worktrees in: the project's, then those given with worktree --repo
+  { REPO='' repo_root || true; jq -r '.repos[]?' "$(reg)"; } | awk 'NF && !seen[$0]++'
+}
+find_repo() { # id: set REPO to the repo holding the agent's worktree or branch, unless --repo was given
+  local x
+  [[ -z ${REPO:-} ]] || return 0
+  for x in $(repos); do
+    if [[ -d $(REPO=$x wt_dir)/$1 ]] || git -C "$x" show-ref --verify --quiet "refs/heads/drover/$HID/$1"; then REPO=$x; return 0; fi
+  done
+}
 wt_dir() { # one folder per corral beside the repo: <parent>/droverworktrees/<repo>-<HID>
   local r; r=$(repo_root) || return 1
   echo "$(dirname "$r")/droverworktrees/$(basename "$r")-$HID"
 }
-state() { jq -r '.state // "unknown"' "$ROOT/$HID/status/$1.json" 2>/dev/null || echo unknown; }
+state() { jq -r '.state // "unknown"' "$ROOT/$HID/status/$1.json" 2> /dev/null | grep . || echo unknown; }
 banner() { # the corral tab shows it; only the launcher (outside) needs it
   inside && return 0
   local s
@@ -45,14 +55,9 @@ drover_title() { # re-title the drover session (ids recorded by the SessionStart
   i=$(jq -r '.drover.session_id // .drover_session_id // empty' "$(reg)") t=$(jq -r '.drover.transcript // .drover_transcript // empty' "$(reg)")
   bash "$DIR/drover-title.sh" "$t" "$i" "$n" || echo "drover session unknown: run /rename $n" >&2
 }
+valid_id() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "$2 must match [a-z0-9][a-z0-9-]*: $1"; }
+trim() { local x=$1; x=${x#"${x%%[![:space:]]*}"}; echo "${x%"${x##*[![:space:]]}"}"; }
 slugify() { local x=${1#corral-}; x=${x%-"$HID"}; echo "$x"; }
-alive() { # 0 alive, 1 dead, 2 unknown (timeout). no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
-  local out line rc=0
-  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || rc=$?
-  ((rc != 124)) || return 2 # timed out: unknown, not dead
-  line=$(grep -E "^$1 " <<< "$out" || true)
-  [[ -n $line && $line != *EXITED* ]]
-}
 
 input_box() { # pane: lines between the last two rule lines of the screen (the prompt box)
   local screen
@@ -60,7 +65,11 @@ input_box() { # pane: lines between the last two rule lines of the screen (the p
   tac <<< "$screen" | awk '/^─{20}/{c++; next} c==1'
 }
 
-type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
+type_in() { # pane text [verify=1]: one writer per pane at a time
+  mkdir -p "$ROOT/$HID/locks"
+  ( flock -w 30 9 || exit 1; _type_in "$@" ) 9> "$ROOT/$HID/locks/$1.lock"
+}
+_type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
   local pane=$1 text=$2 verify=${3:-1} needle box _
   needle=${text:0:30}
   z paste -p "$pane" "$text" || return 1
@@ -96,6 +105,7 @@ send() { # to from msg
       return 0
     fi
     type_in "$pane" "[from $from] $msg" || die "not delivered to $to"
+    [[ $(state "$to") != idle ]] || echo '{}' | "$DIR/drover-status.sh" busy "$h/status/$to.json" # shown busy at once, not when the hook gets to run
   fi
   echo "$(date -Is) $line" >> "$h/messages.log"
 }
@@ -123,6 +133,19 @@ close_agent_pane() { # id
   tab_empty "$tab" && z close-tab-by-id "$tab" 2> /dev/null || true
 }
 
+# shellcheck disable=SC2016
+task_mark() { # task-id agent: the task is running for agent (call after delivery succeeded); each dispatch restarts it
+  tset --arg i "$1" --arg o "$2" '(.[] | select(.id == $i)) |= (.owner = $o | .state = "in_progress" | .attempts = ((.attempts // 0) + 1)
+    | .started_at = (now | todate) | del(.finished_at))'
+  story_derive > /dev/null
+}
+# shellcheck disable=SC2016
+task_text() { # task-id agent: the message that tells agent its task
+  jq -r --arg i "$1" --arg d "$DIR" --arg h "$HID" --arg a "$2" '.[] | select(.id == $i)
+    | "Task \(.id): \(.title)\(if (.acceptance | length) > 0 then ". Acceptance: " + (.acceptance | join("; ")) else "" end). Report with: \($d)/drover.sh report \($h) \($a) \(.id) done|blocked|failed \"<summary>\""' "$ROOT/$HID/tasks.json"
+}
+has_task() { jq -e --arg i "$1" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || die "unknown task: $1"; }
+
 write_files() { # id purpose [story]
   local id=$1 purpose=$2 h="$ROOT/$HID"
   cat > "$h/agents/$id.prompt.md" <<EOF
@@ -135,7 +158,7 @@ Messages cost the receiver a full turn: send one only when you are blocked on an
 $DIR/drover.sh send $HID <to-id|drover> $id "<one-line message>"
 Longer content: write a file in $h and send the path.
 
-When a task is done (or you cannot finish it), report once; this writes $h/reports/$id.md and tells the drover:
+When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.md first; this records the result and tells the drover:
 $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
 Then stop and wait.
 EOF
@@ -150,8 +173,9 @@ EOF
 launch() { # id where cwd model -- claude-args...
   local id=$1 where=$2 cwd=$3 model=$4 h="$ROOT/$HID" tab pane target
   shift 5
+  local perm=${PERM:-$(agent "$id" perm)}
   local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude --model "$model" --settings "$h/agents/$id.settings.json"
-    --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
+    ${perm:+--permission-mode "$perm"} --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
   case $where in
     tab)
       tab=$(z new-tab --name "$id" --cwd "$cwd" --no-focus -- "${cmd[@]}")
@@ -213,15 +237,15 @@ write_drover_files() { # settings, launcher and prompts of the in-corral drover
   if [[ $fork == true ]]; then
     cat > "$h/drover.prompt.first" <<EOF
 You are a FORK of the conversation that launched this corral. That conversation's last step, drover.sh new, has ALREADY completed: it created this zellij session, this tab and the dashboard. You are now the drover of HID $HID (session $(jq -r .session "$(reg)"), project $proj).
-Do NOT run drover.sh new or close, and do not repeat or resume any tool call from the forked history. Load the ferenyl-claude:drover skill, take the user's request and the decisions from the conversation above, and continue as the drover with drover.sh spawn. $brief
+Do NOT run drover.sh new or close, and do not repeat or resume any tool call from the forked history. Load the ferenyl-claude:drover skill, take the user's request and the decisions from the conversation above, and continue as the drover with drover.sh spawn. Start the inbox Monitor (see the skill). $brief
 EOF
   else
     cat > "$h/drover.prompt.first" <<EOF
-You are the drover of HID $HID (zellij session $(jq -r .session "$(reg)"), project $proj). The session, this tab and the dashboard already exist: do NOT run drover.sh new or close. Load the ferenyl-claude:drover skill and act as the drover. ${brief:-The user will give you the task here.}
+You are the drover of HID $HID (zellij session $(jq -r .session "$(reg)"), project $proj). The session, this tab and the dashboard already exist: do NOT run drover.sh new or close. Load the ferenyl-claude:drover skill and act as the drover (start the inbox Monitor, see the skill). ${brief:-The user will give you the task here.}
 EOF
   fi
   cat > "$h/drover.prompt.revive" <<EOF
-This corral (HID $HID) was closed or its drover exited, and has been revived. Do NOT run drover.sh new or close. Load the ferenyl-claude:drover skill, catch up from $h/tasks.json, $h/reports/, the tail of $h/inbox/drover.log and drover.sh status $HID, then continue as the drover.
+This corral (HID $HID) was closed or its drover exited, and has been revived. Do NOT run drover.sh new or close. Load the ferenyl-claude:drover skill, catch up from $h/tasks.json, $h/reports/, the tail of $h/inbox/drover.log and drover.sh status $HID, start the inbox Monitor (see the skill), then continue as the drover.
 EOF
   {
     echo '#!/usr/bin/env bash'
@@ -339,6 +363,11 @@ if [[ ${2:-} == --force ]]; then # drover.sh <cmd> <HID> --force ...
 fi
 # shellcheck disable=SC2128
 case $cmd in
+  ''|new|gc|_*) ;;
+  *) [[ ${1:-} =~ ^[0-9a-f]{8}$ && -f $ROOT/$1/registry.json ]] || die "unknown drover id: ${1:-}" ;;
+esac
+# shellcheck disable=SC2128
+case $cmd in
   new) # new <slug> <project-dir> [--model M] [--brief FILE] [--fork]
     slug=$1 proj=$(realpath "$2")
     shift 2
@@ -360,12 +389,14 @@ case $cmd in
     fi
     [[ $fork == false || -n $dsid ]] || die "--fork: this session's id is unknown (no SessionStart hook record)"
     HID=$(cut -c1-8 /proc/sys/kernel/random/uuid)
-    slug=$(slugify "$slug") S="corral-$slug-$HID"
+    slug=$(slugify "${slug,,}") S="corral-$slug-$HID"
+    valid_id "$slug" slug
     h="$ROOT/$HID"
     mkdir -p "$h"/{agents,status,reports,inbox}
     jq -n --arg id "$HID" --arg s "$S" --arg sl "$slug" --arg p "$proj" --arg o "$PWD" --arg l "$dsid" --arg m "$model" \
       --arg sid "$(cat /proc/sys/kernel/random/uuid)" --argjson f "$fork" \
-      '{id: $id, session: $s, project: $p, slug: $sl, drover_cwd: $o, closed: false, agents: {}, launcher_session_id: $l,
+      --arg v "$(jq -r '.version // empty' "$DIR/../../../.claude-plugin/plugin.json" 2> /dev/null || true)" \
+      '{schema: 1, drover_version: $v, id: $id, session: $s, project: $p, slug: $sl, drover_cwd: $o, closed: false, agents: {}, launcher_session_id: $l,
         drover: {mode: "corral", model: $m, session_id: $sid, fork: $f}}' > "$h/registry.json"
     echo '[]' > "$h/tasks.json"
     [[ -z $brief ]] || cp "$brief" "$h/brief.md"
@@ -378,18 +409,24 @@ case $cmd in
     banner
     echo "The drover runs inside the corral (tab drover). Attach with the command above; this session can be closed."
     ;;
-  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>]
-    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story=''
+  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>] [--task <tid>] [--perm <mode>]
+    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story='' tid='' PERM=''
     shift 7
     while (($#)); do
       case $1 in
         --trust) trust=--trust; shift ;;
         --story) story=${2:?--story needs a story id}; shift 2 ;;
+        --task) tid=${2:?--task needs a task id}; shift 2 ;;
+        --perm) PERM=${2:?--perm needs a mode}; shift 2 ;;
         *) die "unknown option: $1" ;;
       esac
     done
     guard_outside
+    [[ $PERM =~ ^[A-Za-z]*$ ]] || die "bad --perm: $PERM"
+    [[ -z $tid ]] || has_task "$tid"
     [[ ${id,,} != droverstatusui ]] || die "droverstatusui is reserved for the web user"
+    [[ $id != drover ]] || die "drover is reserved"
+    valid_id "$id" "agent id"
     [[ -z $(agent "$id" pane_id) ]] || die "agent exists: $id"
     if [[ -n $story ]]; then
       has_story "$story"
@@ -399,20 +436,33 @@ case $cmd in
       echo "UNTRUSTED $cwd — ask the user, then run again with --trust" >&2; exit 3
     fi
     write_files "$id" "$purpose" "$story"
+    [[ -z $tid ]] || task="$task $(task_text "$tid" "$id")"
     csid=$(cat /proc/sys/kernel/random/uuid)
     read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" "$task")
     # shellcheck disable=SC2015,SC2016
     jset --arg a "$id" --arg p "$purpose" --arg m "$model" --argjson t "$tab" --arg pn "$pane" \
-      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" \
+      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" \
       '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}
-        + if $s == "" then {} else {story: $s} end'
+        + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end'
     if [[ $trust == --trust ]] && ! trusted "$cwd"; then
       sleep 4
       z send-keys -p "$pane" Down Enter
       echo "trust answered — verify: zellij -s $(sess) action dump-screen -p $pane"
     fi
+    [[ -z $tid ]] || task_mark "$tid" "$id"
     echo "$id $pane (tab $tab, $model)"
     banner
+    ;;
+  dispatch) # dispatch <hid> <task-id> [agent] — give an idle agent its task (owner defaults to the task's owner)
+    HID=$1 tid=${2:?task id}
+    guard_outside
+    has_task "$tid"
+    id=${3:-$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json")}
+    [[ -n $id && -n $(agent "$id" pane_id) ]] || die "no agent to dispatch to (pass one: dispatch $HID $tid <agent>)"
+    [[ $(state "$id") == idle ]] || die "$id is not idle (state: $(state "$id"))"
+    send "$id" drover "$(task_text "$tid" "$id")"
+    task_mark "$tid" "$id"
+    echo "$tid -> $id"
     ;;
   send) # send <hid> <to> <from> <message>
     HID=$1
@@ -429,8 +479,22 @@ case $cmd in
       esac
     done
     [[ $st =~ ^(done|blocked|failed)$ ]] || die "status must be done|blocked|failed"
-    printf 'task: %s | status: %s | changed: %s | summary: %s | open: %s\n' "$tid" "$st" "$changed" "$sum" "$open" > "$ROOT/$HID/reports/$id.md"
-    send drover "$id" "report: $tid $st"
+    known=true
+    jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || known=false
+    sum=${sum//[$'\n\r']/ } changed=${changed//[$'\n\r']/ } open=${open//[$'\n\r']/ }
+    r="$ROOT/$HID/reports"
+    now=$(date -u +%FT%TZ)
+    # the agent's own detail survives; a previous one-liner is replaced
+    if [[ ! -s $r/$id.md ]] || { [[ $(wc -l < "$r/$id.md") -le 1 ]] && [[ $(head -c 6 "$r/$id.md") == "task: " ]]; }; then
+      printf 'task: %s | status: %s | changed: %s | summary: %s | open: %s\n' "$tid" "$st" "$changed" "$sum" "$open" > "$r/$id.md"
+    fi
+    # shellcheck disable=SC2016
+    jq -nc --arg t "$tid" --arg s "$st" --arg m "$sum" --arg c "$changed" --arg o "$open" --arg at "$now" \
+      '{task: $t, status: $s, summary: $m, changed: $c, open: $o, at: $at}' | tee "$r/$id.json" >> "$r/$id.log"
+    # shellcheck disable=SC2016
+    ! $known || tset --arg i "$tid" --arg at "$now" --arg s "$st" \
+      '(.[] | select(.id == $i)) |= (if $s == "blocked" then . else .state = $s | .finished_at = $at end)'
+    send drover "$id" "report: $tid $st$($known || echo ' (unknown task)')${sum:+ — ${sum:0:140}}"
     story_derive > /dev/null
     echo "reported: $tid $st"
     ;;
@@ -439,25 +503,36 @@ case $cmd in
     case ${2:-} in
       next) # not done, not running, all deps done
         jq -r '[.[] | select(.state == "done") | .id] as $d | .[]
-          | select(.state != "done" and .state != "in_progress" and all(.depends_on[]?; IN($d[])))
+          | select(.state != "done" and .state != "in_progress" and ((.state == "failed" and (.attempts // 0) >= 3) | not) and all(.depends_on[]?; IN($d[])))
           | "\(.id)\t\(.owner // "-")\t\(.title)"' "$t"
+        ;;
+      list) # list [state]
+        jq -r --arg s "${3:-}" '.[] | select($s == "" or .state == $s) | "\(.id)\t\(.state)\t\(.owner // "-")\t\(.title)\t\((.acceptance // []) | join("; ") | if . == "" then "-" else . end)"' "$t" | column -t -s $'\t'
         ;;
       add)
         guard_outside
-        tid=${3:?task id} title=${4:?title}
+        tid=${3:?task id} title=$(trim "${4:?title}")
         shift 4
+        valid_id "$tid" "task id"
+        [[ -n $title ]] || die "empty title"
         [[ -f $t ]] || echo '[]' > "$t"
         jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$t" > /dev/null && die "task exists: $tid"
         owner='' dep='' acc='' story='' kind=''
         for kv in "$@"; do
           case $kv in
-            owner=*) owner=${kv#*=} ;;
-            depends=*) dep=${kv#*=} ;;
-            accept=*) acc=${kv#*=} ;;
-            story=*) story=${kv#*=} ;;
-            kind=*) kind=${kv#*=} ;;
+            owner=*) owner=$(trim "${kv#*=}") ;;
+            depends=*) dep=$(trim "${kv#*=}") ;;
+            accept=*) acc=$(trim "${kv#*=}") ;;
+            story=*) story=$(trim "${kv#*=}") ;;
+            kind=*) kind=$(trim "${kv#*=}") ;;
             *) die "expected owner=O depends=a,b accept=\"x;y\" story=S kind=plan|impl|review|pr: $kv" ;;
           esac
+        done
+        [[ -z $owner || $owner == drover ]] || valid_id "$owner" owner
+        dep=${dep// /}
+        IFS=, read -ra deps <<< "$dep"
+        for d in "${deps[@]}"; do
+          jq -e --arg i "$d" 'any(.[]; .id == $i)' "$t" > /dev/null || die "unknown dependency: $d"
         done
         [[ -z $kind || $kind =~ ^(plan|impl|review|pr)$ ]] || die "kind must be plan|impl|review|pr"
         [[ -n $story || -z $owner ]] || story=$(agent "$owner" story) # a story agent's tasks belong to its story
@@ -465,7 +540,7 @@ case $cmd in
         # shellcheck disable=SC2016
         tset --arg i "$tid" --arg ti "$title" --arg o "$owner" --arg d "$dep" --arg a "$acc" --arg s "$story" --arg k "$kind" \
           '. + [{id: $i, title: $ti, acceptance: ($a | split(";") | map(select(. != ""))), depends_on: ($d | split(",") | map(select(. != ""))),
-            owner: (if $o == "" then null else $o end), state: "todo", attempts: 0}
+            owner: (if $o == "" then null else $o end), state: "todo", attempts: 0, created_at: (now | todate)}
             + (if $s == "" then {} else {story: $s} end) + (if $k == "" then {} else {kind: $k} end)]'
         story_derive > /dev/null
         echo "$tid todo${story:+ (story $story)}"
@@ -474,18 +549,23 @@ case $cmd in
         guard_outside
         tid=${3:?task id}
         shift 3
-        jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$t" > /dev/null || die "unknown task: $tid"
+        has_task "$tid"
         sets='{}' inc=false
         for kv in "$@"; do
           case $kv in
             attempts+) inc=true ;;
-            *=*) sets=$(jq -c --arg k "${kv%%=*}" --arg v "${kv#*=}" '. + {($k): $v}' <<< "$sets") ;;
+            *=*)
+              v=$(trim "${kv#*=}")
+              [[ ${kv%%=*} != state || $v =~ ^(todo|in_progress|done|failed)$ ]] || die "state must be todo|in_progress|done|failed: $v"
+              if [[ ${kv%%=*} == owner && -n $v && $v != drover ]]; then valid_id "$v" owner; fi
+              sets=$(jq -c --arg k "${kv%%=*}" --arg v "$v" '. + {($k): $v}' <<< "$sets") ;;
             *) die "expected key=value or attempts+: $kv" ;;
           esac
         done
         # shellcheck disable=SC2016
         tset --arg i "$tid" --argjson s "$sets" --argjson inc "$inc" \
-          '(.[] | select(.id == $i)) |= (. + $s | if $inc then .attempts = ((.attempts // 0) + 1) else . end)'
+          '(.[] | select(.id == $i)) |= (. + $s | if $s.state == "in_progress" and (.started_at | not) then .started_at = (now | todate) else . end
+            | if $s.state == "done" or $s.state == "failed" then .finished_at = (now | todate) else . end | if $inc then .attempts = ((.attempts // 0) + 1) else . end)'
         story_derive > /dev/null
         jq -r --arg i "$tid" '.[] | select(.id == $i) | "\(.id) \(.state) \(.owner // "-") attempts \(.attempts // 0)"' "$t"
         a=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .attempts // 0' "$t")
@@ -495,23 +575,39 @@ case $cmd in
           echo "hint: suggest the next larger model"
         fi
         ;;
-      *) die "task <HID> add <id> \"<title>\" [owner=O] [depends=a,b] [accept=\"x;y\"] | task <HID> set <task-id> key=value... [attempts+] | task <HID> next" ;;
+      *) die "task <HID> add <id> \"<title>\" [owner=O] [depends=a,b] [accept=\"x;y\"] | task <HID> set <task-id> key=value... [attempts+] | task <HID> next | task <HID> list [state]" ;;
     esac
     ;;
   catchup) # catchup <hid> — recent inbox, dashboard, reports newest first
     HID=$1 h="$ROOT/$HID"
     echo "== inbox =="
-    tail -n 20 "$h/inbox/drover.log" 2> /dev/null || true
+    c=$(wc -l < "$h/inbox/drover.log" 2> /dev/null || echo 0)
+    [[ -n ${DROVER_AGENT:-} ]] || echo "$c" > "$h/inbox/offset" # the drover's next `inbox` resumes after these lines
+    head -n "$c" "$h/inbox/drover.log" 2> /dev/null | tail -n 20 || true
     echo
     { "$DIR/drover-dashboard.sh" "$HID" || true; } | sed '/^== recent messages ==/,$d' # the inbox tail above covers them
     echo "== reports =="
     # shellcheck disable=SC2012
-    ls -lt --time-style=+%H:%M "$h/reports" 2> /dev/null | awk 'NR > 1 { print $6, $7 }'
+    ls -lt --time-style=+%H:%M "$h"/reports/*.md 2> /dev/null | awk '{ n = split($7, p, "/"); print $6, p[n] }'
+    for f in $(cd "$h/reports" 2> /dev/null && ls -t -- *.json 2> /dev/null); do # shellcheck disable=SC2045
+      # shellcheck disable=SC2016
+      jq -r --arg a "${f%.json}" '"\($a): \(.task) \(.status) — \(.summary)"' "$h/reports/$f"
+    done
     ;;
   inbox) # inbox <hid> — follow new inbox lines (for Monitor)
     HID=$1 f="$ROOT/$1/inbox/drover.log"
     touch "$f"
-    exec tail -n0 -F "$f"
+    of="$ROOT/$1/inbox/offset" # lines delivered to the drover's Monitor: catchup sets it, this loop advances it, so a re-armed Monitor loses nothing
+    n=''
+    [[ -n ${DROVER_AGENT:-} ]] || n=$(cat "$of" 2> /dev/null || true) # agents' Monitors never touch it
+    [[ -n $n ]] || n=$(wc -l < "$f")
+    exec 4< <(tail -n "+$((n + 1))" -F "$f")
+    tp=$!
+    trap 'kill $tp 2> /dev/null' EXIT
+    while IFS= read -r -u 4 l; do
+      printf '%s\n' "$l"
+      [[ -n ${DROVER_AGENT:-} ]] || { echo $((++n)) > "$of.t" && mv "$of.t" "$of"; }
+    done
     ;;
   model) # model <hid> <id> <model>
     HID=$1 id=$2 model=$3
@@ -542,33 +638,65 @@ case $cmd in
     echo "$id -> $pane (tab $tab)"
     banner
     ;;
-  worktree) # worktree <hid> <id> [base] [--story <sid>] — prints the path to use as spawn cwd
-    HID=$1 id=$2 base=HEAD story=''
+  worktree) # worktree <hid> <id> [base] [--story <sid>] [--repo <path>] — prints the path to use as spawn cwd | worktree <hid> rm <id>
+    HID=$1 id=$2 base=HEAD story='' rm=false
     shift 2
+    if [[ $id == rm ]]; then rm=true id=${1:?agent id}; shift; fi
     while (($#)); do
       case $1 in
+        --repo) REPO=$(realpath "${2:?--repo needs a path}"); shift 2 ;;
         --story) story=${2:?--story needs a story id}; shift 2 ;;
         *) base=$1; shift ;;
       esac
     done
     guard_outside
     [[ -z $story ]] || has_story "$story"
-    d=$(wt_dir) || die "project is not a git repo"
+    ! $rm || find_repo "$id"
+    d=$(wt_dir) || die "project is not a git repo (pass --repo <path>)"
+    # shellcheck disable=SC2016
+    [[ -z ${REPO:-} ]] || jset --arg r "$REPO" '.repos = ((.repos // []) + [$r] | unique)'
+    if $rm; then
+      git -C "$(repo_root)" worktree remove "$d/$id" || die "not removed (dirty? commit or discard first); the branch drover/$HID/$id is kept"
+      rmdir "$d" 2> /dev/null || true
+      echo "removed $d/$id (branch kept)"
+      exit 0
+    fi
     mkdir -p "$d"
-    git -C "$(repo_root)" worktree add -b "drover/$HID/$id" "$d/$id" "$base" > /dev/null
+    if [[ -d $d/$id ]]; then :
+    elif git -C "$(repo_root)" show-ref --verify --quiet "refs/heads/drover/$HID/$id"; then # reuse the branch
+      git -C "$(repo_root)" worktree add "$d/$id" "drover/$HID/$id" > /dev/null
+    else
+      git -C "$(repo_root)" worktree add -b "drover/$HID/$id" "$d/$id" "$base" > /dev/null
+    fi
     [[ -z $story ]] || "$DIR/drover-story.sh" "$HID" set "$story" branch="drover/$HID/$id" worktree="$d/$id" > /dev/null
     echo "$d/$id"
     ;;
-  worktrees) # worktrees <hid> — path, branch, dirty|clean
+  merge) # merge <hid> <id> [--repo <path>] — merge drover/<hid>/<id> into the repo's checked-out branch; the drover asks the user first
+    HID=$1 id=${2:?agent id}
+    [[ ${3:-} != --repo ]] || REPO=$(realpath "${4:?--repo needs a path}")
+    guard_outside
+    find_repo "$id"
+    r=$(repo_root) || die "project is not a git repo (pass --repo <path>)"
+    b="drover/$HID/$id"
+    git -C "$r" show-ref --verify --quiet "refs/heads/$b" || die "no branch $b"
+    [[ -z $(git -C "$r" status --porcelain --untracked-files=no) ]] || die "$r has uncommitted changes"
+    d=$(wt_dir) && [[ ! -d $d/$id || -z $(git -C "$d/$id" status --porcelain) ]] || die "worktree $id has uncommitted changes"
+    git -C "$r" merge --no-edit "$b" || { git -C "$r" merge --abort || true; die "merge conflicts: aborted, nothing changed"; }
+    echo "merged $b into $(git -C "$r" branch --show-current)"
+    ;;
+  worktrees) # worktrees <hid> [--repo <path>] — path, branch, dirty|clean
     HID=$1
-    d=$(wt_dir) || exit 0
-    [[ -d $d ]] || exit 0
-    for w in "$d"/*/; do
-      [[ -d $w ]] || continue
-      w=${w%/}
-      b=$(git -C "$w" branch --show-current 2> /dev/null)
-      [[ -n $(git -C "$w" status --porcelain 2> /dev/null) ]] && st=dirty || st=clean
-      echo "$w $b $st"
+    [[ ${2:-} != --repo ]] || REPO=$(realpath "${3:?--repo needs a path}")
+    for x in ${REPO:-$(repos)}; do
+      d=$(REPO=$x wt_dir) || continue
+      [[ -d $d ]] || continue
+      for w in "$d"/*/; do
+        [[ -d $w ]] || continue
+        w=${w%/}
+        b=$(git -C "$w" branch --show-current 2> /dev/null)
+        [[ -n $(git -C "$w" status --porcelain 2> /dev/null) ]] && st=dirty || st=clean
+        echo "$w $b $st"
+      done
     done
     ;;
   kill) # kill <hid> <id>
@@ -577,12 +705,14 @@ case $cmd in
     close_agent_pane "$id"
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a])'
+    rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt"
     story_derive > /dev/null
     echo "closed: $id"
     banner
     ;;
   rename) # rename <hid> <slug>
-    HID=$1 slug=$(slugify "$2")
+    HID=$1 slug=$(slugify "${2,,}")
+    valid_id "$slug" slug
     guard_outside
     new="corral-$slug-$HID"
     [[ $new != "$(sess)" ]] || die "session is already named $new"
@@ -640,17 +770,18 @@ case $cmd in
     fi
     order_tabs
     jset '.closed = false'
-    for id in $(jq -r '.agents | keys[]' "$(reg)"); do
-      [[ -z $(z list-panes -j -t | jq -r --arg p "$(agent "$id" pane_id)" '.[] | select("terminal_\(.id)" == $p) | .id') ]] || continue
+    panes=$(z list-panes -j -t | jq -c '[.[] | "terminal_\(.id)"]')
+    while IFS=$'\x1f' read -u 3 -r id pane0 purpose story cwd model csid; do
+      ((rc == 1)) || ! jq -e --arg p "$pane0" 'index($p)' <<< "$panes" > /dev/null || continue # a recreated session restarts pane ids
       sid=$(jq -r '.session_id // empty' "$ROOT/$HID/status/$id.json" 2> /dev/null)
-      sid=${sid:-$(agent "$id" claude_session_id)}
-      write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
-      read -r tab pane < <(launch "$id" tab "$(agent "$id" cwd)" "$(agent "$id" model)" -- --resume "$sid")
+      sid=${sid:-$csid}
+      write_files "$id" "$purpose" "$story"
+      read -r tab pane < <(launch "$id" tab "$cwd" "$model" -- --resume "$sid")
       # shellcheck disable=SC2016
       jset --arg a "$id" --argjson t "$tab" --arg pn "$pane" --arg c "$sid" \
         '.agents[$a] += {tab_id: $t, tab_name: $a, pane_id: $pn, claude_session_id: $c}'
       echo "revived: $id -> $pane"
-    done
+    done 3< <(jq -r '.agents | to_entries[] | [.key, .value.pane_id, .value.purpose, (.value.story // ""), .value.cwd, .value.model, .value.claude_session_id] | map(. // "") | join("\u001f")' "$(reg)")
     banner
     ;;
   story) # story <hid> <command> ... — story mode, see story.md
@@ -660,7 +791,7 @@ case $cmd in
     ;;
   status) # status <hid>
     HID=$1
-    "$DIR/drover-dashboard.sh" "$HID"
+    "$DIR/drover-dashboard.sh" "$HID" "${2:-}" # --all: also done tasks
     banner
     ;;
   close) # close <hid> [--remove-worktrees|--keep-worktrees] — detached: the drover may live inside the session it kills
@@ -709,17 +840,77 @@ case $cmd in
       pkill -KILL -f "$pat" || true
     fi
     timeout 10 zellij delete-session "$s" 2> /dev/null || true
-    if jq -e '.remove_worktrees == true' "$(reg)" > /dev/null && d=$(wt_dir) && [[ -d $d ]]; then
-      for w in "$d"/*/; do
-        [[ -d $w ]] && git -C "$(repo_root)" worktree remove --force "${w%/}" || true
+    if jq -e '.remove_worktrees == true' "$(reg)" > /dev/null; then
+      for x in $(repos); do
+        d=$(REPO=$x wt_dir) && [[ -d $d ]] || continue
+        for w in "$d"/*/; do
+          [[ -d $w ]] && git -C "$x" worktree remove --force "${w%/}" || true
+        done
+        git -C "$x" worktree prune || true
+        rmdir "$d" "$(dirname "$d")" 2> /dev/null || true
       done
-      git -C "$(repo_root)" worktree prune || true
-      rmdir "$d" "$(dirname "$d")" 2> /dev/null || true
     fi
+    for id in $(jq -r '.agents | keys[]' "$(reg)"); do rm -f "$h/status/$id.json" "$h/status/$id.json.lock" "$h/queue/$id.txt"; done
     jset '.closed = true | .shutdown = true | del(.closing_at) | del(.remove_worktrees) | .agents = {}'
     touch "$h/close.done"
     echo "shut down: $s"
     command -v notify-send > /dev/null && notify-send "drover: $s shut down" || true
+    ;;
+  doc) # doc <hid> add <abs-path> "<note>" [--agent id] | rm <path> | list — documents worth reading (brief.md and plan.md are listed automatically)
+    HID=$1 dj="$ROOT/$HID/docs.json"
+    case ${2:-} in
+      add)
+        guard_outside
+        p=${3:?abs path} note='' agent=''
+        shift 3
+        [[ ${1:---} == --* ]] || { note=$1; shift; }
+        while (($#)); do
+          case $1 in
+            --agent) agent=${2:?--agent needs an id}; shift 2 ;;
+            *) die "unknown option: $1" ;;
+          esac
+        done
+        [[ $p == /* ]] || die "doc path must be absolute: $p"
+        [[ -z $agent ]] || valid_id "$agent" "agent id"
+        [[ -f $dj ]] || echo '[]' > "$dj"
+        # shellcheck disable=SC2016
+        jfile "$dj" --arg p "$p" --arg n "$note" --arg a "$agent" \
+          'map(select(.path != $p)) + [{path: $p, note: $n, agent: $a, added_at: (now | todate)}]'
+        echo "doc: $p"
+        ;;
+      rm)
+        guard_outside
+        [[ -f $dj ]] || die "no docs"
+        # shellcheck disable=SC2016
+        jfile "$dj" --arg p "${3:?path}" 'map(select(.path != $p))'
+        echo "removed: $3"
+        ;;
+      list | '')
+        for p in brief.md plan.md; do
+          [[ ! -f $ROOT/$HID/$p ]] || printf '%s\t%s\t%s\n' "$ROOT/$HID/$p" "-" "$p"
+        done
+        jq -r '.[]? | "\(.path)\t\(.agent | if . == "" then "-" else . end)\t\(.note)"' "$dj" 2> /dev/null || true
+        ;;
+      *) die "doc <HID> add <abs-path> \"<note>\" [--agent id] | rm <path> | list" ;;
+    esac
+    ;;
+  gc) # gc [days=30] — delete corrals shut down more than <days> ago, trim long message/inbox logs
+    for r in "$ROOT"/*/registry.json; do
+      [[ -f $r ]] || continue
+      h=$(dirname "$r")
+      if jq -e '.closed and .shutdown' "$r" > /dev/null 2>&1 && [[ -n $(find "$r" -mtime "+${1:-30}") ]]; then
+        rm -rf "$h"
+        echo "removed $(basename "$h")"
+        continue
+      fi
+      jq -e '.closed and .shutdown' "$r" > /dev/null 2>&1 || continue # a live or revivable corral's logs are tailed by offset
+      for f in "$h/messages.log" "$h/inbox/drover.log"; do
+        (($({ wc -l < "$f"; } 2> /dev/null || echo 0) > 2000)) || continue
+        tail -n 1000 "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+        rm -f "$h/inbox/offset"
+        echo "trimmed $f"
+      done
+    done
     ;;
   _order) HID=$1; order_tabs ;; # internal: watcher
   _recreate_corral) # internal: watcher — the dashboard only, never the drover
@@ -737,5 +928,5 @@ case $cmd in
       command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
     fi
     ;;
-  *) die "commands: new spawn send report task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn dispatch send report merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac

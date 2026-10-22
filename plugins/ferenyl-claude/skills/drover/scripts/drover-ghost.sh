@@ -7,14 +7,9 @@
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 h="$HOME/.claude/drover/$2"
+# shellcheck source=lib.sh
+. "$DIR/lib.sh"
 sess() { jq -r .session "$h/registry.json"; }
-alive() { # 0 alive, 1 dead, 2 unknown (timeout). no pipe from zellij into grep -q: an early exit would give zellij EPIPE and pipefail a false "dead"
-  local out line rc=0
-  out=$(timeout 10 zellij list-sessions -n 2> /dev/null) || rc=$?
-  ((rc != 124)) || return 2 # timed out: unknown, not dead
-  line=$(grep -E "^$1 " <<< "$out" || true)
-  [[ -n $line && $line != *EXITED* ]]
-}
 
 stop() {
   if [[ -f $h/ghost.pids ]]; then
@@ -46,8 +41,8 @@ case $1 in
     exec 9> "$h/ghost.lock"
     flock -n 9 || exit 0
     miss=0 dead=0
-    while sleep 5; do
-      s=$(sess)
+    while sleep 10; do
+      IFS=$'\x1f' read -r s closing cid did < <(jq -r '[.session, (.closing_at // 0), (.corral_tab_id // "-"), (.drover.tab_id // "-")] | map(tostring) | join("\u001f")' "$h/registry.json")
       rc=0
       alive "$s" || rc=$?
       ((rc != 2)) || continue
@@ -57,25 +52,32 @@ case $1 in
       fi
       dead=0
       now=$(date +%s)
-      (($(jq '.closing_at // 0' "$h/registry.json") + 60 < now)) || continue # a close is running
+      ((closing + 60 < now)) || continue # a close is running
       tabs=$(timeout 10 zellij -s "$s" action list-tabs -j 2> /dev/null) || continue
-      jq -e 'type == "array" and length > 0' <<< "$tabs" > /dev/null 2>&1 || continue
       # Tabs are tracked by id: the corral tab sits at position 0, the drover tab at 1 (the user may move them).
-      cid=$(jq -r '.corral_tab_id // empty' "$h/registry.json")
-      cid=${cid:-$(jq -r '[.[] | select(.name == "corral") | .tab_id] | min // empty' <<< "$tabs")}
-      did=$(jq -r '.drover.tab_id // empty' "$h/registry.json")
-      if jq -e --argjson c "${cid:--1}" 'any(.[]; .tab_id == $c)' <<< "$tabs" > /dev/null; then
+      # one jq: corral tab id, corral tab present, extra corral tabs, drover tab missing, order wrong
+      IFS=$'\t' read -r cid ok extra dgone reorder < <(jq -r --arg c "$cid" --arg d "$did" '
+        if (type == "array" and length > 0) | not then empty else
+        def num: try tonumber catch null;
+        ($c | num) as $c0 | ($d | num) as $did
+        | ($c0 // ([.[] | select(.name == "corral") | .tab_id] | min)) as $cid
+        | any(.[]; .tab_id == $cid) as $ok
+        | [($cid // "-"), $ok, ([.[] | select(.name == "corral" and .tab_id != $cid) | .tab_id] | join(" ") | if . == "" then "-" else . end),
+           ($ok and $did != null and (any(.[]; .tab_id == $did) | not)),
+           ($ok and (any(.[]; .tab_id == $cid and .position != 0) or ($did != null and any(.[]; .tab_id == $did and .position != 1))))]
+        | map(tostring) | join("\t") end' <<< "$tabs" 2> /dev/null) || continue
+      [[ -n ${ok:-} ]] || continue
+      if [[ $ok == true ]]; then
         miss=0
-        for t in $(jq -r --argjson c "$cid" '.[] | select(.name == "corral" and .tab_id != $c) | .tab_id' <<< "$tabs"); do
-          timeout 10 zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
-        done
-        if [[ -n $did ]]; then
-          if ! jq -e --argjson d "$did" 'any(.[]; .tab_id == $d)' <<< "$tabs" > /dev/null; then
-            "$DIR/drover.sh" _drover_gone "$2" || true
-          fi
+        if [[ $extra != - ]]; then
+          for t in $extra; do
+            timeout 10 zellij -s "$s" action close-tab-by-id "$t" 2> /dev/null || true
+          done
         fi
-        if jq -e --argjson c "$cid" --argjson d "${did:--1}" '
-          (.[] | select(.tab_id == $c) | .position != 0) or any(.[]; .tab_id == $d and .position != 1)' <<< "$tabs" > /dev/null; then
+        if [[ $dgone == true ]]; then
+          "$DIR/drover.sh" _drover_gone "$2" || true
+        fi
+        if [[ $reorder == true ]]; then
           "$DIR/drover.sh" _order "$2" || true
         fi
       else
@@ -84,10 +86,7 @@ case $1 in
         miss=0
       fi
     done
-    (
-      flock 8
-      jq '.closed = true' "$h/registry.json" > "$h/registry.json.w" && mv "$h/registry.json.w" "$h/registry.json"
-    ) 8> "$h/registry.json.lock"
+    jfile "$h/registry.json" '.closed = true'
     stop
     ;;
   stop) stop ;;

@@ -103,9 +103,10 @@ guess_tracker() { # tracker for bare numbers/queries: tracker= > repo= > project
 
 derive() { # auto status of every story without status_manual (contract table, first match wins)
   [[ -f $S ]] || return 0
-  local f bl=()
+  local f n bl=()
   for f in "$h"/status/*.json; do
-    [[ $(jq -r .state "$f" 2> /dev/null) != blocked ]] || bl+=("$(basename "$f" .json)")
+    n=$(basename "$f" .json) # a killed agent's leftover status must not pin its story
+    if [[ $(jq -r .state "$f" 2> /dev/null) == blocked ]] && jq -e --arg a "$n" '.agents | has($a)' "$h/registry.json" > /dev/null 2>&1; then bl+=("$n"); fi
   done
   # shellcheck disable=SC2016
   sset --slurpfile t "$h/tasks.json" --slurpfile r "$h/registry.json" --arg now "$(now)" \
