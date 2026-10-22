@@ -58,7 +58,7 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 
 ## Models (smallest that works; user's choice wins; show per agent in plan)
 haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: normal implementation, tests, known-cause fixes, review · opus: architecture, unclear bugs, big refactors, final review · fable: only if the user asks; never suggest it.
-`task set` hints when to suggest the next larger model (max opus) and when to ask the user.
+`task set` hints when to suggest the next larger model (max opus) and when to ask the user. A drover started on opus for planning switches itself to sonnet (`/model sonnet`) once the plan is accepted; delegation and waiting need no more.
 
 ## Workflow
 1 Plan: show agents+models first. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
