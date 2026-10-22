@@ -23,7 +23,11 @@ init() { [[ -f $S ]] || echo '[]' > "$S"; mkdir -p "$h/stories"; }
 story() { jq -r --arg i "$1" ".[] | select(.id == \$i) | .$2 // empty" "$S"; }
 need() { jq -e --arg i "$1" 'any(.[]; .id == $i)' "$S" > /dev/null 2>&1 || die "unknown story: $1"; }
 mcp() { # what failed, what to do instead: exit 5 = use the tracker MCP
-  echo "$1 failed (CLI missing or not authenticated?): use the tracker MCP instead, then $2" >&2
+  if [[ $1 == az\ * ]]; then
+    echo "$1 failed (not logged in?): first find an az config dir (CLAUDE.md, else ask the user) and run 'story mode azure_config=DIR', then retry; only if that fails use the tracker MCP, then $2" >&2
+  else
+    echo "$1 failed (CLI missing or not authenticated?): use the tracker MCP instead, then $2" >&2
+  fi
   exit 5
 }
 yn() { case $1 in y | yes | true | 1) echo true ;; n | no | false | 0) echo false ;; *) die "expected y|n: $1" ;; esac; }
@@ -260,7 +264,7 @@ case $cmd in
       case $a in
         parallel | sequential) m=$(jq -c --argjson v "$([[ $a == parallel ]] && echo true || echo false)" '.parallel = $v' <<< "$m") ;;
         planner=* | pr=* | pr_review=*) m=$(jq -c --arg k "${a%%=*}" --argjson v "$(yn "${a#*=}")" '.[$k] = $v' <<< "$m") ;;
-        azure_config=*) # AZURE_CONFIG_DIR for every az call; - clears
+        azure_config=*) # AZURE_CONFIG_DIR for every az call of this script (not the agents' own az); - clears
           v=${a#*=} v=${v/#\~/$HOME}
           [[ $v == - || -d $v ]] || die "no such directory: $v"
           [[ $v == - ]] || v=$(realpath "$v")
@@ -383,13 +387,14 @@ case $cmd in
     git -C "$d" push -u origin "$b"
     if [[ -n $(gh_repo "$r") ]]; then
       gh pr view "$b" -R "$(gh_repo "$r")" > /dev/null 2>&1 ||
-        gh pr create -R "$(gh_repo "$r")" --head "$b" --title "$t" --body-file "${bodyf:-/dev/null}" ${draft:+"--draft"} > /dev/null
+        { [[ -n $bodyf ]] || echo "warning: no --body-file: the PR body is empty (PR templates are not applied)" >&2
+          gh pr create -R "$(gh_repo "$r")" --head "$b" --title "$t" --body-file "${bodyf:-/dev/null}" ${draft:+"--draft"} > /dev/null; }
       j=$(gh pr view "$b" -R "$(gh_repo "$r")" --json url,number,state,isDraft)
       p=$(jq -c '{url, number, host: "github", state: (if .isDraft then "draft" else (.state | ascii_downcase) end), review: null}' <<< "$j")
     elif [[ $r == *dev.azure.com* || $r == *visualstudio.com* ]]; then
       body=()
       [[ -z $bodyf ]] || body=(--description "$(< "$bodyf")")
-      j=$(cd "$d" && az repos pr create --detect true --source-branch "$b" --title "$t" "${body[@]}" --draft "$([[ -n $draft ]] && echo true || echo false)" -o json)
+      j=$(cd "$d" && az repos pr create --detect true --source-branch "$b" --title "$t" "${body[@]}" --draft "$([[ -n $draft ]] && echo true || echo false)" -o json) || mcp "az repos pr create" "story set $sid pr=<url|nr>"
       p=$(jq -c '{url: "\(.repository.webUrl)/pullrequest/\(.pullRequestId)", number: .pullRequestId, host: "azure",
         state: (if .isDraft then "draft" else "open" end), review: null}' <<< "$j")
     else

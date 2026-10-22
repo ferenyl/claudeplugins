@@ -79,7 +79,8 @@ type_in() { # pane text [verify=1 [guard=0]]: one writer per pane at a time; gua
 }
 _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
   local pane=$1 text=$2 verify=${3:-1} guard=${4:-0} needle box _
-  needle=$(tr -d '[:space:]' <<< "${text: -30}") # the tail differs between messages (the heads all start "[from x]"); box lines wrap, so compare without whitespace
+  ((${#text} > 30)) && needle=${text: -30} || needle=$text # a negative offset past the start gives "" in bash
+  needle=$(tr -d '[:space:]' <<< "$needle") # the tail differs between messages (the heads all start "[from x]"); box lines wrap, so compare without whitespace
   [[ $guard != 1 ]] || ! box_has_text "$pane" || return 3 # inside the lock: no window between the check and the paste
   z paste -p "$pane" "$text" || return 1
   sleep 0.5
@@ -117,7 +118,7 @@ send() { # to from msg
     type_in "$pane" "[from $from] $msg" 1 1 || rc=$?
     if ((rc == 3)); then # the user is typing in its input box
       echo "$(date -Is) $line (skipped: input box in use)" >> "$h/messages.log"
-      echo "[drover-sh -> drover] not delivered to $to (its input box holds text, the user is typing): $msg. Retry later: send $HID $to $from \"...\"" >> "$h/inbox/drover.log"
+      [[ $from == drover ]] || echo "[drover-sh -> drover] not delivered to $to (its input box holds text, the user is typing): $msg. Retry later, as $from: send $HID $to $from \"...\"" >> "$h/inbox/drover.log" # the drover gets exit 3 on stderr
       echo "not delivered to $to (input box in use)" >&2
       return 3
     fi
@@ -197,7 +198,7 @@ $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>
 To ask the drover or the user a question instead of finishing: $DIR/drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
 Then stop and wait.
 
-Read files with the Read, Grep and Glob tools (or jcodemunch if you have it), not cat/sed/head/tail/grep in Bash (a hook blocks them).
+Prefer the Read, Grep and Glob tools over cat/sed/head/tail/grep in Bash.
 EOF
   [[ ! -f $h/rules.md ]] || printf '\nRules for all agents (%s):\n%s\n' "$h/rules.md" "$(< "$h/rules.md")" >> "$h/agents/$id.prompt.md"
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
@@ -835,7 +836,7 @@ case $cmd in
     close_agent_pane "$id"
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a], .branches[$a])'
-    rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt"
+    rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt" "$ROOT/$HID/agents/$id.mcp.json"
     # shellcheck disable=SC2016
     [[ ! -f $ROOT/$HID/questions.json ]] || jfile "$ROOT/$HID/questions.json" --arg a "$id" 'map(select(.agent != $a))'
     story_derive > /dev/null

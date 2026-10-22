@@ -1,6 +1,6 @@
 ---
 name: drover
-description: Orchestrate multiple Claude agents in a Zellij session. Use when the user wants to create a new orchestrated project, start/move/close agents in tabs or panes, give agents purposes, change an agent's model, rename the session, send messages between agents or split a task across multiple agents.
+description: Orchestrate multiple Claude agents in a Zellij session. Use when the user wants to create a new orchestrated project, run agents on issues, work items, stories or tickets (story mode: worktrees, PRs, parallel agents), start/move/close agents in tabs or panes, give agents purposes, change an agent's model, rename the session, send messages between agents or split a task across multiple agents.
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/drover.sh *)
 ---
 
@@ -18,10 +18,10 @@ drover.sh answer <HID> <id> "<answer>"    # answers an agent's open `question:` 
 drover.sh model <HID> <id> <model>        # waits for idle
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
 drover.sh kill <HID> <id> [--now [--task todo|failed]]  # refuses busy/blocked or unreported in_progress; ask the user before --now  ·  rename <HID> <slug>  ·  flush <HID> <id> (deliver messages queued while blocked)
-drover.sh worktree <HID> <id> [base] [--branch <name>] [--repo <path>] | rm <id>   # branch default drover/<HID>/<id>, base default origin/HEAD; prints path (spawn cwd); rm keeps the branch
-drover.sh worktrees <HID>                 # path branch dirty|clean
+drover.sh worktree <HID> <id> [base] [--branch <name>] [--repo <path>] [--story <sid>] | rm <id>   # branch default drover/<HID>/<id>, base default origin/HEAD; prints path (spawn cwd); rm keeps the branch
+drover.sh worktrees <HID> [--repo <path>] # path branch dirty|clean
 drover.sh repos <HID>                     # git roots of the project, current branch, submodules
-drover.sh merge <HID> <id>                # branch into the repo's checked-out branch; only after the user said yes
+drover.sh merge <HID> <id> [--repo <path>] # branch into the repo's checked-out branch; only after the user said yes
 drover.sh task <HID> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"]   # + story=S kind=K: story.md
 drover.sh task <HID> set <task-id> state=S owner=O [attempts+]   # prints hints at 2/3 attempts
 drover.sh task <HID> next | list [state]  # ready to dispatch (deps done) | all, with acceptance
@@ -37,10 +37,10 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 
 - Story mode (the user works from issues/work items/stories): read `${CLAUDE_SKILL_DIR}/story.md` first.
 - `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `sonnet` (`--model opus` for large or unclear projects). After `new` give the user the printed attach line and stop: this session can be closed.
-- `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all, ~11k tokens of tool schemas per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
-- Agents read files with Read/Grep/Glob (or jcodemunch), never cat/sed/head/grep in Bash (a hook blocks them): tell them so in tasks if needed (the agent prompt already does).
+- `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all servers, whose tool schemas cost tokens per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
+- Agents prefer Read/Grep/Glob over cat/sed/head/grep in Bash (the agent prompt says so). Per-user rules (hooks, tools) go in `<HID>/rules.md`.
 - `DROVER_NOTIFY=0` in the environment disables desktop notifications (notify-send).
-- Mutating commands (spawn/dispatch/model/move/kill/worktree/rename/flush) refuse from outside the drover pane unless `--force` is given right after the id (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
+- Mutating commands (spawn/dispatch/answer/model/move/kill/worktree/merge/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice, else 2–4 kebab words in the plan. `rename` on request.
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
