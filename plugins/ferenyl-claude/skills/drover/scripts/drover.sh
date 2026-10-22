@@ -163,8 +163,25 @@ task_text() { # task-id agent: the message that tells agent its task
 }
 has_task() { jq -e --arg i "$1" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || die "unknown task: $1"; }
 
+mcp_config() { # cwd list: --mcp config with only the named servers (user scope, project scope and .mcp.json of the cwd, its repo root and the main worktree); "none" = no servers
+  local dirs=("$1") d f pj=() proj='[]' r
+  r=$(git -C "$1" rev-parse --show-toplevel 2> /dev/null) && dirs+=("$r")
+  r=$(git -C "$1" worktree list --porcelain 2> /dev/null | sed -n '1s/^worktree //p') && [[ -z $r ]] || dirs+=("$r")
+  dirs+=("$(jq -r .project "$(reg)")")
+  proj=$(printf '%s\n' "${dirs[@]}" | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
+  for d in $(jq -r '.[]' <<< "$proj"); do [[ ! -f $d/.mcp.json ]] || pj+=("$d/.mcp.json"); done
+  f=$(jq -sc '{mcpServers: (map(.mcpServers // {}) | add // {})}' /dev/null "${pj[@]}")
+  # shellcheck disable=SC2016
+  jq -n --arg l "$2" --argjson dirs "$proj" --slurpfile u "$HOME/.claude.json" --argjson p "$f" '
+    ($l | split(",") | map(gsub("\\s"; "")) | map(select(. != "" and . != "none"))) as $n
+    | (($u[0].mcpServers // {}) + ([$dirs[] | $u[0].projects[.].mcpServers // {}] | add // {}) + $p.mcpServers) as $all
+    | ($n - ($all | keys)) as $miss
+    | if ($miss | length) > 0 then error("unknown mcp server(s): \($miss | join(", ")) (plugin/connector servers cannot be selected)") else
+      {mcpServers: ($all | with_entries(select(.key | IN($n[]))))} end' || die "bad --mcp: $2"
+}
+
 write_files() { # id purpose [story]
-  local id=$1 purpose=$2 h="$ROOT/$HID"
+  local id=$1 purpose=$2 h="$ROOT/$HID" allow=${ALLOW-$(agent "$1" allow)}
   cat > "$h/agents/$id.prompt.md" <<EOF
 You are agent $id in drover $HID. Purpose: $purpose
 Only do what is within your purpose.
@@ -179,9 +196,13 @@ When a task is done (or you cannot finish it), report once. Put any detail in $h
 $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
 To ask the drover or the user a question instead of finishing: $DIR/drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
 Then stop and wait.
+
+Read files with the Read, Grep and Glob tools (or jcodemunch if you have it), not cat/sed/head/tail/grep in Bash (a hook blocks them).
 EOF
+  [[ ! -f $h/rules.md ]] || printf '\nRules for all agents (%s):\n%s\n' "$h/rules.md" "$(< "$h/rules.md")" >> "$h/agents/$id.prompt.md"
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" '{permissions: {allow: ["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)"]}, hooks: {
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" '{permissions: {allow: (["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)"]
+      + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))))}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
@@ -191,9 +212,10 @@ EOF
 launch() { # id where cwd model -- claude-args...
   local id=$1 where=$2 cwd=$3 model=$4 h="$ROOT/$HID" tab pane target
   shift 5
-  local perm=${PERM:-$(agent "$id" perm)}
+  local perm=${PERM:-$(agent "$id" perm)} mcp=()
+  [[ ! -f $h/agents/$id.mcp.json ]] || mcp=(--strict-mcp-config --mcp-config "$h/agents/$id.mcp.json") # before another option: --mcp-config takes several values
   local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude --model "$model" --settings "$h/agents/$id.settings.json"
-    ${perm:+--permission-mode "$perm"} --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
+    ${perm:+--permission-mode "$perm"} "${mcp[@]}" --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
   case $where in
     tab)
       tab=$(z new-tab --name "$id" --cwd "$cwd" --no-focus -- "${cmd[@]}")
@@ -427,8 +449,8 @@ case $cmd in
     banner
     echo "The drover runs inside the corral (tab drover). Attach with the command above; this session can be closed."
     ;;
-  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>] [--task <tid>] [--perm <mode>]
-    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story='' tid='' PERM=''
+  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>] [--task <tid>] [--perm <mode>] [--mcp a,b|none] [--allow "Bash(git *),…"]
+    HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story='' tid='' PERM='' ALLOW='' mcps=''
     shift 7
     while (($#)); do
       case $1 in
@@ -436,6 +458,8 @@ case $cmd in
         --story) story=${2:?--story needs a story id}; shift 2 ;;
         --task) tid=${2:?--task needs a task id}; shift 2 ;;
         --perm) PERM=${2:?--perm needs a mode}; shift 2 ;;
+        --mcp) mcps=${2:?--mcp needs a,b or none}; shift 2 ;;
+        --allow) ALLOW=${2:?--allow needs a list}; shift 2 ;;
         *) die "unknown option: $1" ;;
       esac
     done
@@ -454,14 +478,19 @@ case $cmd in
       echo "UNTRUSTED $cwd — ask the user, then run again with --trust" >&2; exit 3
     fi
     write_files "$id" "$purpose" "$story"
+    rm -f "$ROOT/$HID/agents/$id.mcp.json"
+    if [[ -n $mcps ]]; then # built first: a failure leaves no file; the file holds server secrets
+      mcpcfg=$(mcp_config "$cwd" "$mcps")
+      (umask 077; printf '%s\n' "$mcpcfg" > "$ROOT/$HID/agents/$id.mcp.json")
+    fi
     [[ -z $tid ]] || task="$task $(task_text "$tid" "$id")"
     csid=$(cat /proc/sys/kernel/random/uuid)
     read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" "$task")
     # shellcheck disable=SC2015,SC2016
     jset --arg a "$id" --arg p "$purpose" --arg m "$model" --argjson t "$tab" --arg pn "$pane" \
-      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" \
+      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" --arg al "$ALLOW" \
       '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}
-        + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end'
+        + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end + if $al == "" then {} else {allow: $al} end'
     if [[ $trust == --trust ]] && ! trusted "$cwd"; then
       sleep 4
       z send-keys -p "$pane" Down Enter

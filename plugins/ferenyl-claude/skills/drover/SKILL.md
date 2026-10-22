@@ -11,7 +11,7 @@ Control only via `${CLAUDE_SKILL_DIR}/scripts/drover.sh` (below: `drover.sh`). A
 
 ```
 drover.sh new <slug> <project-dir> [--model M] [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
-drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm acceptEdits|plan|...]
+drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm acceptEdits|plan|...] [--mcp a,b|none] [--allow "Bash(git *),…"]
 drover.sh dispatch <HID> <tid> [agent]    # idle agent gets the task (owner, in_progress, attempts+, id + acceptance sent)
 drover.sh send <HID> <to> drover "<msg>"   # exit 3 + inbox note if the target's input box holds text (user typing): retry later
 drover.sh answer <HID> <id> "<answer>"    # answers an agent's open `question:` (agents: report <HID> <id> <tid> question "<text>" [--options "a|b"])
@@ -36,6 +36,8 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 
 - Story mode (the user works from issues/work items/stories): read `${CLAUDE_SKILL_DIR}/story.md` first.
 - `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `sonnet` (`--model opus` for large or unclear projects). After `new` give the user the printed attach line and stop: this session can be closed.
+- `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all, ~11k tokens of tool schemas per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
+- Agents read files with Read/Grep/Glob (or jcodemunch), never cat/sed/head/grep in Bash (a hook blocks them): tell them so in tasks if needed (the agent prompt already does).
 - Mutating commands (spawn/dispatch/model/move/kill/worktree/rename/flush) refuse from outside the drover pane unless `--force` is given right after the id (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice, else 2–4 kebab words in the plan. `rename` on request.
 - id: short kebab-case; purpose from the user, with boundaries.
