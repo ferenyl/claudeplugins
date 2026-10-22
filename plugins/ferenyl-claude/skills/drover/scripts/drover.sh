@@ -699,9 +699,34 @@ case $cmd in
       done
     done
     ;;
-  kill) # kill <hid> <id>
-    HID=$1 id=$2
+  kill) # kill <hid> <id> [--now [--task todo|failed]] — refuses a busy/blocked agent or unreported in_progress task unless --now
+    HID=$1 id=$2 now=false ts=todo tgiven=false
+    shift 2
+    while (($#)); do
+      case $1 in
+        --now) now=true; shift ;;
+        --task) ts=${2:?--task needs todo|failed} tgiven=true; shift 2 ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
+    [[ $ts =~ ^(todo|failed)$ ]] || die "--task must be todo|failed"
+    ! $tgiven || $now || die "--task needs --now"
     guard_outside
+    rj="$ROOT/$HID/reports/$id.json"
+    # a task counts as reported only by a done/failed report newer than its start
+    # shellcheck disable=SC2016
+    open=$(jq -r --arg a "$id" --arg r "$(jq -r '.at // empty' "$rj" 2> /dev/null || true)" --arg rt "$(jq -r 'select(.status == "blocked") | .task' "$rj" 2> /dev/null || true)" \
+      '[.[]? | select(.owner == $a and .state == "in_progress" and ($r < (.started_at // "") or .id == $rt)) | .id] | join(" ")' "$ROOT/$HID/tasks.json" 2> /dev/null || true)
+    if ! $now; then
+      ! [[ $(state "$id") =~ ^(busy|blocked)$ ]] || die "$id is $(state "$id"); wait for it, or kill $HID $id --now after asking the user"
+      [[ -z $open ]] || die "$id has in_progress task(s) without a report: $open; wait for the report, or kill $HID $id --now [--task todo|failed] after asking the user"
+    elif [[ -n $open ]]; then
+      for t in $open; do
+        # shellcheck disable=SC2016
+        tset --arg i "$t" --arg s "$ts" --arg at "$(date -u +%FT%TZ)" \
+          '(.[] | select(.id == $i)) |= (.state = $s | if $s == "failed" then .finished_at = $at else del(.owner, .started_at) end)'
+      done
+    fi
     close_agent_pane "$id"
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a])'

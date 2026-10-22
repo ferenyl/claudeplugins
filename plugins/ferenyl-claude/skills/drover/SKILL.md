@@ -16,7 +16,7 @@ drover.sh dispatch <HID> <tid> [agent]    # idle agent gets the task (owner, in_
 drover.sh send <HID> <to> drover "<msg>"
 drover.sh model <HID> <id> <model>        # waits for idle
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
-drover.sh kill <HID> <id>  ·  rename <HID> <slug>  ·  flush <HID> <id> (deliver messages queued while blocked)
+drover.sh kill <HID> <id> [--now [--task todo|failed]]  # refuses busy/blocked or unreported in_progress; ask the user before --now  ·  rename <HID> <slug>  ·  flush <HID> <id> (deliver messages queued while blocked)
 drover.sh worktree <HID> <id> [base] [--repo <path>] | rm <id>   # branch drover/<HID>/<id>, prints path (spawn cwd); rm keeps the branch
 drover.sh worktrees <HID>                 # path branch dirty|clean
 drover.sh merge <HID> <id>                # branch into the repo's checked-out branch; only after the user said yes
