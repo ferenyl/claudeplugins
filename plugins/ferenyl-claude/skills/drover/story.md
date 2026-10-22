@@ -6,7 +6,7 @@ drover.sh story <HID> fetch <ref...> [repo=o/r] [tracker=github|azure|jira] [org
 drover.sh story <HID> add <sid> "<title>" [tracker= key= url= source= type= assignee= state= file=F]   # import after an MCP fetch
 drover.sh story <HID> mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n]
 drover.sh story <HID> set <sid> [status=S|auto] [blocked="reason"|-] [order=N] [clarify="answer"] [branch=B] [worktree=W] [assignee=A]
-drover.sh story <HID> list | show <sid>
+drover.sh story <HID> list | show <sid>          # also refresh open PRs, at most once per 60 s
 drover.sh story <HID> assign <sid>              # tracker assignee = current CLI user
 drover.sh story <HID> comment <sid> "<text>"    # comment on the work item
 drover.sh story <HID> pr <sid> [--draft]        # push branch, create/record PR
@@ -25,4 +25,4 @@ Statuses: backlog · planning · working · waiting-for-user · review · done; 
 5 Story agents: id `<sid>-<role>`, `spawn ... --story <sid>`; tasks `<sid>-<name>` (story is inherited from the owner). Parallel: `worktree <HID> <sid>-dev --story <sid>` as cwd.
 6 "How is story X / the stories going?": `story show <sid>` / `story list`, not `read`.
 7 Never write statuses to trackers; tracker writes are only `assign` and `comment`, each after the user said yes.
-8 Story tasks done: PR (ask unless answered in 3) → `story pr <sid>`. Review wanted: spawn `<sid>-review` (sonnet; opus for large diffs), task `kind=review`, reviews the PR diff; posts review comments only if the user agreed. `story sync` before reporting PR state. Ask before merging. No PR: after the user accepts, `story set <sid> status=done`.
+8 Story tasks done: PR (ask unless answered in 3) → `story pr <sid>`. Review wanted: spawn `<sid>-review` (sonnet; opus for large diffs), task `kind=review`, reviews the PR diff; posts review comments only if the user agreed. `story sync` before reporting PR state. Ask before merging. User says a PR is merged, or the next story starts: `story sync`, check `story list` (merged ⇒ `done`), then the next worktree from a fresh `git fetch` + `origin/main`. No PR: after the user accepts, `story set <sid> status=done`.

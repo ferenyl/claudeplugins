@@ -430,7 +430,7 @@ case $cmd in
     [[ -z $(agent "$id" pane_id) ]] || die "agent exists: $id"
     if [[ -n $story ]]; then
       has_story "$story"
-      [[ $id == "$story"-* ]] || die "a story agent's id starts with $story-"
+      [[ $id == "$story"-* ]] || die "story agent ids are <sid>-<role>, e.g. $story-$id"
     fi
     if ! trusted "$cwd" && [[ $trust != --trust ]]; then
       echo "UNTRUSTED $cwd — ask the user, then run again with --trust" >&2; exit 3

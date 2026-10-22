@@ -57,7 +57,7 @@ haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: 
 ## Workflow
 1 Plan: show agents+models first. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
 2 Dispatch only what `task next` lists, one task per agent: `spawn ... --task <tid>` or `dispatch` (sets in_progress + attempts, tells the agent the task id; agents `report` it). Use `--perm acceptEdits` for agents that edit files, so they do not block on every prompt.
-3 Wait: `catchup` once, then Monitor `drover.sh inbox <HID>` with timeout_ms 1800000 (max). It expires after that, and /clear or revive ends it: re-arm at once on its expiry notice (no lines are lost) and at the start of every session. On `report: <task> <status> — <summary>` act on the line; reports/<agent>.md only for detail.
+3 Wait: right after every spawn/dispatch/send that starts work, make sure a Monitor on `inbox` is running. `catchup` once, then Monitor `drover.sh inbox <HID>` with timeout_ms 1800000 (max). It expires after that, and /clear or revive ends it: re-arm at once on its expiry notice (no lines are lost) and at the start of every session. On `report: <task> <status> — <summary>` act on the line; reports/<agent>.md only for detail.
 4 Follow the `task set` hints (ask the user after 3 attempts).
 5 Several coding agents in one git repo → one worktree per agent via `worktree` (never `git worktree add` yourself; all go under `<repo-parent>/droverworktrees/`), its path as spawn cwd; never merge without the user's yes (`merge`).
 6 Report briefly on state change or when a decision is needed.

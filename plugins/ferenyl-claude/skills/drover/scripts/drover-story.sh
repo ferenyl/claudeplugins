@@ -155,6 +155,15 @@ pr_sync() { # sid: refresh pr state/review from the host
   sset --arg i "$1" --argjson v "$v" --arg t "$(now)" 'map(if .id == $i then .pr += $v | .updated_at = $t else . end)'
 }
 
+auto_sync() { # list/show: refresh open PRs at most once per 60 s, so a merge shows without `sync`
+  local f=$h/pr_synced i
+  [[ -f $S ]] || return 0
+  if [[ -f $f ]] && (($(date +%s) - $(stat -c %Y "$f") < 60)); then return 0; fi
+  touch "$f"
+  for i in $(jq -r '.[] | select(.pr.state == "open" or .pr.state == "draft") | .id' "$S"); do pr_sync "$i"; done
+  derive
+}
+
 sid=
 case $cmd in
   fetch) # fetch <ref...> [repo=o/r] [tracker=github|azure|jira] [org=URL] [query="..."] [id=<sid>]
@@ -269,10 +278,11 @@ case $cmd in
     derive
     list | grep -E "^$sid " || true
     ;;
-  list) list ;;
+  list) auto_sync; list ;;
   show) # show <sid>: story, its tasks and agents
     sid=${1:?sid}
     need "$sid"
+    auto_sync
     jq --arg i "$sid" '.[] | select(.id == $i) | del(.summary)' "$S"
     echo "file: $h/stories/$sid.md"
     echo "tasks:"
