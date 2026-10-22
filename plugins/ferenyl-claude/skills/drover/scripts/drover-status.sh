@@ -28,6 +28,8 @@ if [[ $s == busy && $ps == blocked && -s $h/queue/$id.txt ]]; then # nothing flu
 fi
 if [[ $s == idle && $ps != idle && $id != drover && -f $h/tasks.json ]]; then # a Stop without a report leaves the drover waiting
   rat=$(jq -r '.at // empty' "$h/reports/$id.json" 2> /dev/null || true)
+  # an answered question is not a report
+  if [[ $(jq -r .status "$h/reports/$id.json" 2> /dev/null) == question ]] && ! jq -e --arg a "$id" 'any(.[]?; .agent == $a)' "$h/questions.json" > /dev/null 2>&1; then rat=; fi
   for tid in $(jq -r --arg o "$id" --arg r "$rat" '.[]? | select(.owner == $o and .state == "in_progress" and ($r < (.started_at // ""))) | .id' "$h/tasks.json" 2> /dev/null || true); do
     w="[drover-sh -> drover] $id idle, task $tid has no report"
     tail -n 50 "$h/inbox/drover.log" 2> /dev/null | grep -qxF "$w" || echo "$w" >> "$h/inbox/drover.log" # once per task

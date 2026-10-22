@@ -109,7 +109,8 @@ derive() { # auto status of every story without status_manual (contract table, f
   done
   # shellcheck disable=SC2016
   sset --slurpfile t "$h/tasks.json" --slurpfile r "$h/registry.json" --arg now "$(now)" \
-    --argjson b "$(printf '%s\n' "${bl[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+    --argjson b "$(printf '%s\n' "${bl[@]}" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson q "$(jq -c '[.[]?.story]' "$h/questions.json" 2> /dev/null || echo '[]')" '
     ($t[0] // []) as $tasks | ($r[0].agents // {}) as $ag
     | map(if .status_manual then . else
       .id as $i | [$tasks[] | select(.story == $i)] as $st
@@ -117,7 +118,7 @@ derive() { # auto status of every story without status_manual (contract table, f
       | ([$ag | to_entries[] | select(.value.story == $i) | .key] + [$st[] | select(.state == "in_progress") | .owner // empty]) as $who
       | (if .pr.state == "merged" and all($st[]; .state == "done") then "done"
         elif .pr.state == "draft" or .pr.state == "open" or (($impl | length) > 0 and all($st[]; .state == "done") and .pr == null) then "review"
-        elif any($who[]; IN($b[])) or any($st[]; .state == "failed" and (.attempts // 0) >= 3) then "waiting-for-user"
+        elif any($who[]; IN($b[])) or ($i | IN($q[])) or any($st[]; .state == "failed" and (.attempts // 0) >= 3) then "waiting-for-user"
         elif any($impl[]; .state != "todo") then "working"
         elif any($plan[]; .state != "todo") then "planning"
         else "backlog" end) as $s

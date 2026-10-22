@@ -69,13 +69,18 @@ input_box() { # pane: lines between the last two rule lines of the screen (the p
   tac <<< "$screen" | awk '/^─{20}/{c++; next} c==1'
 }
 
-type_in() { # pane text [verify=1]: one writer per pane at a time
+box_has_text() { # pane: the input box holds typed text (the empty box is "❯" + nbsp; the placeholder hint Try "…" counts as empty)
+  input_box "$1" | sed -E $'s/^[[:space:]]*(❯|>)?([[:space:]]|\xc2\xa0)*//; s/^Try ".*$//' | grep -q .
+}
+
+type_in() { # pane text [verify=1 [guard=0]]: one writer per pane at a time; guard=1: exit 3 if the user is typing in the box
   mkdir -p "$ROOT/$HID/locks"
   ( flock -w 30 9 || exit 1; _type_in "$@" ) 9> "$ROOT/$HID/locks/$1.lock"
 }
 _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
-  local pane=$1 text=$2 verify=${3:-1} needle box _
+  local pane=$1 text=$2 verify=${3:-1} guard=${4:-0} needle box _
   needle=${text:0:30}
+  [[ $guard != 1 ]] || ! box_has_text "$pane" || return 3 # inside the lock: no window between the check and the paste
   z paste -p "$pane" "$text" || return 1
   sleep 0.5
   for _ in 1 2 3; do
@@ -89,7 +94,7 @@ _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input b
 }
 
 send() { # to from msg
-  local to=$1 from=$2 msg=$3 h="$ROOT/$HID" line pane
+  local to=$1 from=$2 msg=$3 h="$ROOT/$HID" line pane rc
   from=${from//$'\n'/ } msg=${msg//$'\n'/ } # one log line per message: no forged "[droverstatusui -> ...]" lines
   line="[$from -> $to] $msg"
   [[ ${from,,} != droverstatusui || -z ${DROVER_AGENT:-} ]] || die "droverstatusui is the web user; agents must not send as it"
@@ -108,7 +113,15 @@ send() { # to from msg
       echo "queued for $to (blocked)" >&2
       return 0
     fi
-    type_in "$pane" "[from $from] $msg" || die "not delivered to $to"
+    rc=0
+    type_in "$pane" "[from $from] $msg" 1 1 || rc=$?
+    if ((rc == 3)); then # the user is typing in its input box
+      echo "$(date -Is) $line (skipped: input box in use)" >> "$h/messages.log"
+      echo "[drover-sh -> drover] not delivered to $to (its input box holds text, the user is typing): $msg. Retry later: send $HID $to $from \"...\"" >> "$h/inbox/drover.log"
+      echo "not delivered to $to (input box in use)" >&2
+      return 3
+    fi
+    ((rc == 0)) || die "not delivered to $to"
     [[ $(state "$to") != idle ]] || echo '{}' | "$DIR/drover-status.sh" busy "$h/status/$to.json" # shown busy at once, not when the hook gets to run
   fi
   echo "$(date -Is) $line" >> "$h/messages.log"
@@ -164,6 +177,7 @@ Longer content: write a file in $h and send the path.
 
 When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.<task-id>.md first; this records the result and tells the drover:
 $DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
+To ask the drover or the user a question instead of finishing: $DIR/drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
 Then stop and wait.
 EOF
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
@@ -472,23 +486,25 @@ case $cmd in
     HID=$1
     send "$2" "$3" "${*:4}"
     ;;
-  report) # report <hid> <agent-id> <task-id> <done|blocked|failed> <summary> [--changed X] [--open Y] — agents
-    HID=$1 id=$2 tid=$3 st=$4 sum=$5 changed=- open=-
+  report) # report <hid> <agent-id> <task-id> <done|blocked|failed|question> <summary|question> [--changed X] [--open Y] [--options "a|b"] — agents
+    HID=$1 id=$2 tid=$3 st=$4 sum=$5 changed=- open=- opts=
     shift 5
     while (($#)); do
       case $1 in
         --changed) changed=${2:?--changed needs a value}; shift 2 ;;
         --open) open=${2:?--open needs a value}; shift 2 ;;
+        --options) opts=${2:?--options needs a value}; shift 2 ;;
         *) die "unknown option: $1" ;;
       esac
     done
-    [[ $st =~ ^(done|blocked|failed)$ ]] || die "status must be done|blocked|failed"
+    [[ $st =~ ^(done|blocked|failed|question)$ ]] || die "status must be done|blocked|failed|question"
+    [[ -z $opts || $st == question ]] || die "--options only with question"
     owner=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json" 2> /dev/null || true)
     [[ -n $(agent "$id" pane_id) ]] || die "unknown agent id: $id${owner:+ (task $tid is owned by $owner: report $HID $owner $tid ...)}; agents: $(jq -r '.agents | keys | join(" ")' "$(reg)")"
     [[ -z $owner || $owner == "$id" ]] || die "task $tid is owned by $owner, not $id: report $HID $owner $tid ..."
     known=true
     jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || known=false
-    sum=${sum//[$'\n\r']/ } changed=${changed//[$'\n\r']/ } open=${open//[$'\n\r']/ }
+    sum=${sum//[$'\n\r']/ } changed=${changed//[$'\n\r']/ } open=${open//[$'\n\r']/ } opts=${opts//[$'\n\r']/ }
     r="$ROOT/$HID/reports"
     now=$(date -u +%FT%TZ)
     # the agent's own detail survives; a previous one-liner is replaced
@@ -500,8 +516,20 @@ case $cmd in
       '{task: $t, status: $s, summary: $m, changed: $c, open: $o, at: $at}' | tee "$r/$id.json" >> "$r/$id.log"
     # shellcheck disable=SC2016
     ! $known || tset --arg i "$tid" --arg at "$now" --arg s "$st" \
-      '(.[] | select(.id == $i)) |= (if $s == "blocked" then . else .state = $s | .finished_at = $at end)'
-    send drover "$id" "report: $tid $st$($known || echo ' (unknown task)')${sum:+ — ${sum:0:140}}"
+      '(.[] | select(.id == $i)) |= (if $s == "blocked" or $s == "question" then . else .state = $s | .finished_at = $at end)'
+    if [[ $st == question ]]; then # waits for `answer`; the story shows waiting-for-user meanwhile
+      qs="$ROOT/$HID/questions.json"
+      qstory=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .story // empty' "$ROOT/$HID/tasks.json" 2> /dev/null || true)
+      qstory=${qstory:-$(agent "$id" story)}
+      [[ -f $qs ]] || echo '[]' > "$qs"
+      # shellcheck disable=SC2016
+      jfile "$qs" --arg a "$id" --arg t "$tid" --arg q "$sum" --arg o "$opts" --arg at "$now" \
+        --arg s "$qstory" \
+        'map(select(.agent != $a)) + [{agent: $a, task: $t, text: $q, options: $o, story: $s, at: $at}]'
+      send drover "$id" "question: $tid ${sum:0:300}${opts:+ [options: $opts]} — answer: drover.sh answer $HID $id \"<answer>\""
+    else
+      send drover "$id" "report: $tid $st$($known || echo ' (unknown task)')${sum:+ — ${sum:0:140}}"
+    fi
     story_derive > /dev/null
     echo "reported: $tid $st"
     ;;
@@ -584,6 +612,18 @@ case $cmd in
         ;;
       *) die "task <HID> add <id> \"<title>\" [owner=O] [depends=a,b] [accept=\"x;y\"] | task <HID> set <task-id> key=value... [attempts+] | task <HID> next | task <HID> list [state]" ;;
     esac
+    ;;
+  answer) # answer <hid> <id> "<answer>" — send the answer to the agent's open question and close it
+    HID=$1 id=$2 ans=${3:?answer}
+    guard_outside
+    qs="$ROOT/$HID/questions.json"
+    jq -e --arg a "$id" 'any(.[]?; .agent == $a)' "$qs" > /dev/null 2>&1 || die "no open question from $id"
+    q=$(jq -r --arg a "$id" '.[] | select(.agent == $a) | .text' "$qs")
+    send "$id" drover "answer to your question \"${q:0:80}\": $ans"
+    # shellcheck disable=SC2016
+    jfile "$qs" --arg a "$id" 'map(select(.agent != $a))'
+    story_derive > /dev/null
+    echo "answered: $id"
     ;;
   catchup) # catchup <hid> — recent inbox, dashboard, reports newest first
     HID=$1 h="$ROOT/$HID"
@@ -730,7 +770,7 @@ case $cmd in
     rj="$ROOT/$HID/reports/$id.json"
     # a task counts as reported only by a done/failed report newer than its start
     # shellcheck disable=SC2016
-    open=$(jq -r --arg a "$id" --arg r "$(jq -r '.at // empty' "$rj" 2> /dev/null || true)" --arg rt "$(jq -r 'select(.status == "blocked") | .task' "$rj" 2> /dev/null || true)" \
+    open=$(jq -r --arg a "$id" --arg r "$(jq -r '.at // empty' "$rj" 2> /dev/null || true)" --arg rt "$(jq -r 'select(.status == "blocked" or .status == "question") | .task' "$rj" 2> /dev/null || true)" \
       '[.[]? | select(.owner == $a and .state == "in_progress" and ($r < (.started_at // "") or .id == $rt)) | .id] | join(" ")' "$ROOT/$HID/tasks.json" 2> /dev/null || true)
     if ! $now; then
       ! [[ $(state "$id") =~ ^(busy|blocked)$ ]] || die "$id is $(state "$id"); wait for it, or kill $HID $id --now after asking the user"
@@ -746,6 +786,8 @@ case $cmd in
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a], .branches[$a])'
     rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt"
+    # shellcheck disable=SC2016
+    [[ ! -f $ROOT/$HID/questions.json ]] || jfile "$ROOT/$HID/questions.json" --arg a "$id" 'map(select(.agent != $a))'
     story_derive > /dev/null
     echo "closed: $id"
     banner
@@ -968,5 +1010,5 @@ case $cmd in
       command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
     fi
     ;;
-  *) die "commands: new spawn dispatch send report merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn dispatch send report answer merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac

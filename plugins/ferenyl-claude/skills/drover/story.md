@@ -19,7 +19,7 @@ Statuses: backlog · planning · working · waiting-for-user · review · done; 
 ## Flow
 1 `story fetch` (or MCP + `story add`), show `story list`.
 2 Unclear story (what is wrong/what to do?): `story set <sid> status=waiting-for-user`, ask the user, then `story set <sid> clarify="..."` (unpins). Ask whether to post the answer on the work item → `story comment`.
-3 One AskUserQuestion batch: sequential or parallel (parallel ⇒ one worktree per story) · planner? (skip if the user asked for one) · PR when done? · if PR: PR review? · assign the work items to you? → `story mode ...`; on yes `story assign` each.
+3 One AskUserQuestion batch (`pr=y` = the user already said yes to commit + push + PR after a green review: do it without asking again; ask again only on blocking findings or changed scope): sequential or parallel (parallel ⇒ one worktree per story) · planner? (skip if the user asked for one) · PR when done? · if PR: PR review? · assign the work items to you? → `story mode ...`; on yes `story assign` each.
   Sequential: stories by `order`, one at a time, one branch per story (`story set <sid> branch=`).
 4 Planner first (if chosen): spawn it before any other agent; tasks `kind=plan story=<sid>` (one planner for all, or `<sid>-plan` per story when parallel). It plans the solution and the agents+models per story into a plan file. Show its agents to the user before spawning; every other story task `depends=` its plan task.
 5 Story agents: id `<sid>-<role>`, `spawn ... --story <sid>`; tasks `<sid>-<name>` (story is inherited from the owner). Parallel: `worktree <HID> <sid>-dev --story <sid>` as cwd.

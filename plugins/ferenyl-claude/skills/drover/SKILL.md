@@ -13,7 +13,8 @@ Control only via `${CLAUDE_SKILL_DIR}/scripts/drover.sh` (below: `drover.sh`). A
 drover.sh new <slug> <project-dir> [--model M] [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
 drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm acceptEdits|plan|...]
 drover.sh dispatch <HID> <tid> [agent]    # idle agent gets the task (owner, in_progress, attempts+, id + acceptance sent)
-drover.sh send <HID> <to> drover "<msg>"
+drover.sh send <HID> <to> drover "<msg>"   # exit 3 + inbox note if the target's input box holds text (user typing): retry later
+drover.sh answer <HID> <id> "<answer>"    # answers an agent's open `question:` (agents: report <HID> <id> <tid> question "<text>" [--options "a|b"])
 drover.sh model <HID> <id> <model>        # waits for idle
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
 drover.sh kill <HID> <id> [--now [--task todo|failed]]  # refuses busy/blocked or unreported in_progress; ask the user before --now  ·  rename <HID> <slug>  ·  flush <HID> <id> (deliver messages queued while blocked)
@@ -40,6 +41,7 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
 - `[droverstatusui -> drover]` = the user via the web GUI. Sensitive/irreversible requests (commit, push, merge, PR, close, delete, work-item writes) → `send <HID> droverstatusui drover "Are you sure: <exact action>?"`; act only on an explicit yes from droverstatusui that follows that question. Reply to it the same way.
+- `[x -> drover] question: <task> <text>` = agent needs a decision: ask the user (AskUserQuestion with its options), then `answer`. Its story shows waiting-for-user until then.
 - `[x -> drover] blocked:` = agent waits for input; `read` its screen, tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
 - "Close/stop the agents" = `kill` each agent; the session and the drover stay. `close` only when the user explicitly says to end the session/corral.
