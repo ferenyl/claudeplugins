@@ -10,6 +10,11 @@ shift 2 || true
 h="$HOME/.claude/drover/$HID" S="$HOME/.claude/drover/$HID/stories.json"
 [[ -f $h/registry.json ]] || die "unknown drover: $HID"
 [[ -f $h/tasks.json ]] || echo '[]' > "$h/tasks.json" # derive/list/show read it before the first task add
+az() { # azure_config (story mode): another folder's az login
+  local d
+  d=$(jq -r '.story_mode.azure_config // empty' "$h/registry.json")
+  if [[ -n $d ]]; then AZURE_CONFIG_DIR=$d command az "$@"; else command az "$@"; fi
+}
 STATUSES="backlog planning working waiting-for-user review done"
 
 sset() { jfile "$S" "$@"; }
@@ -249,13 +254,18 @@ case $cmd in
     store "$n"
     derive
     ;;
-  mode) # mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n]
+  mode) # mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n] [azure_config=DIR|-]
     m='{}'
     for a; do
       case $a in
         parallel | sequential) m=$(jq -c --argjson v "$([[ $a == parallel ]] && echo true || echo false)" '.parallel = $v' <<< "$m") ;;
         planner=* | pr=* | pr_review=*) m=$(jq -c --arg k "${a%%=*}" --argjson v "$(yn "${a#*=}")" '.[$k] = $v' <<< "$m") ;;
-        *) die "mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n]" ;;
+        azure_config=*) # AZURE_CONFIG_DIR for every az call; - clears
+          v=${a#*=} v=${v/#\~/$HOME}
+          [[ $v == - || -d $v ]] || die "no such directory: $v"
+          [[ $v == - ]] || v=$(realpath "$v")
+          m=$(jq -c --arg v "$v" '.azure_config = (if $v == "-" then null else $v end)' <<< "$m") ;;
+        *) die "mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n] [azure_config=DIR|-]" ;;
       esac
     done
     # shellcheck disable=SC2016

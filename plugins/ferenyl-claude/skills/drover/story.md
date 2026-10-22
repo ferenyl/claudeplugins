@@ -4,7 +4,7 @@ The user works from issues/work items/stories. State: `<HID>/stories.json`, `<HI
 ```
 drover.sh story <HID> fetch <ref...> [repo=o/r] [tracker=github|azure|jira] [org=URL] [query="..."] [id=<sid>]
 drover.sh story <HID> add <sid> "<title>" [tracker= key= url= source= type= assignee= state= file=F]   # import after an MCP fetch
-drover.sh story <HID> mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n]
+drover.sh story <HID> mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n] [azure_config=DIR|-]
 drover.sh story <HID> set <sid> [status=S|auto] [blocked="reason"|-] [order=N] [clarify="answer"] [branch=B] [worktree=W] [assignee=A] [pr=<url|nr>|-]
 drover.sh story <HID> list | show <sid>          # also refresh open PRs, at most once per 60 s
 drover.sh story <HID> assign <sid>              # tracker assignee = current CLI user
@@ -13,7 +13,7 @@ drover.sh story <HID> pr <sid> [--draft] [--title T] [--body-file F]   # push br
 drover.sh story <HID> sync                      # refresh PR state/review
 spawn ... --story <sid>  ·  worktree <HID> <sid>-<role> --story <sid>  ·  task add ... story=<sid> kind=plan|impl|review|pr
 ```
-Refs: issue URL/`#N` (github), work item URL/id (azure), `KEY-12`/browse URL (jira). Exit 5 = CLI missing/unauthenticated: fetch/write via the tracker MCP, then `story add` / `story set`.
+Refs: issue URL/`#N` (github), work item URL/id (azure), `KEY-12`/browse URL (jira). Exit 5 = CLI missing/unauthenticated: fetch/write via the tracker MCP, then `story add` / `story set`. Azure: if `az` fails on auth, the user may be logged in from another folder: look in the instructions in effect (CLAUDE.md) for an az config path, else ask the user whether there is an az login in another folder; then `story mode azure_config=DIR` (exported as AZURE_CONFIG_DIR for every az call) and retry.
 Statuses: backlog · planning · working · waiting-for-user · review · done; derived from tasks/agents/PR. `status=S` pins one, `status=auto` unpins. `blocked=` is a badge, not a status.
 
 ## Flow

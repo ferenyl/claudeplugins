@@ -2,6 +2,8 @@
 # drover-status.sh <state> <file>  (hook: reads hook JSON from stdin)
 # state: busy | idle | blocked | unblock (busy only if currently blocked)
 set -euo pipefail
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 s=$1 f=$2
 t0=$(date +%s%N) # event order: a hook process that lost the race must not overwrite a later event
 id=$(basename "$f" .json) h=$(dirname "$(dirname "$f")")
@@ -37,7 +39,7 @@ if [[ $s == idle && $ps != idle && $id != drover && -f $h/tasks.json ]]; then # 
 fi
 if [[ $s == blocked ]]; then
   [[ $id == drover ]] || echo "[$id -> drover] blocked: needs input/approval" >> "$h/inbox/drover.log"
-  command -v notify-send > /dev/null && notify-send "drover: $id blocked" "needs input/approval" || true
+  notify "drover: $id blocked" "needs input/approval"
 fi
 # story mode: blocked/unblocked agents move their stories in and out of waiting-for-user
 [[ $1 == busy || ! -f $h/stories.json ]] || "$(dirname "$0")/drover-story.sh" "$(basename "$h")" derive > /dev/null 2>&1 || true

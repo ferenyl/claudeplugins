@@ -79,7 +79,7 @@ type_in() { # pane text [verify=1 [guard=0]]: one writer per pane at a time; gua
 }
 _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input box no longer holds the text
   local pane=$1 text=$2 verify=${3:-1} guard=${4:-0} needle box _
-  needle=${text:0:30}
+  needle=$(tr -d '[:space:]' <<< "${text: -30}") # the tail differs between messages (the heads all start "[from x]"); box lines wrap, so compare without whitespace
   [[ $guard != 1 ]] || ! box_has_text "$pane" || return 3 # inside the lock: no window between the check and the paste
   z paste -p "$pane" "$text" || return 1
   sleep 0.5
@@ -88,7 +88,7 @@ _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input b
     [[ $verify == 1 ]] || return 0
     sleep 1
     box=$(input_box "$pane")
-    if ! grep -qF -e "$needle" -e "[Pasted text" <<< "$box"; then return 0; fi
+    if ! tr -d '[:space:]' <<< "$box" | grep -qF -e "$needle" -e "[Pastedtext"; then return 0; fi
   done
   return 1
 }
@@ -392,7 +392,17 @@ ensure_drover() { # recreate the drover tab at position 1 if the tab or its clau
   order_tabs
 }
 
-trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1; }
+trusted() { # dir or an ancestor accepted; a git worktree also counts through its main worktree
+  local x m
+  m=$(git -C "$1" worktree list --porcelain 2> /dev/null | sed -n '1s/^worktree //p')
+  for x in "$1" "$m"; do
+    while [[ -n $x && $x != / ]]; do
+      ! jq -e --arg d "$x" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1 || return 0
+      x=$(dirname "$x")
+    done
+  done
+  return 1
+}
 
 # shellcheck disable=SC2178
 cmd=${1:-}; shift || true
@@ -439,6 +449,7 @@ case $cmd in
       '{schema: 1, drover_version: $v, id: $id, session: $s, project: $p, slug: $sl, drover_cwd: $o, closed: false, agents: {}, launcher_session_id: $l,
         drover: {mode: "corral", model: $m, session_id: $sid, fork: $f}}' > "$h/registry.json"
     echo '[]' > "$h/tasks.json"
+    : > "$h/messages.log"
     [[ -z $brief ]] || cp "$brief" "$h/brief.md"
     write_drover_files
     write_layout
@@ -485,7 +496,7 @@ case $cmd in
     fi
     [[ -z $tid ]] || task="$task $(task_text "$tid" "$id")"
     csid=$(cat /proc/sys/kernel/random/uuid)
-    read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" "$task")
+    read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" -- "$task")
     # shellcheck disable=SC2015,SC2016
     jset --arg a "$id" --arg p "$purpose" --arg m "$model" --argjson t "$tab" --arg pn "$pane" \
       --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" --arg al "$ALLOW" \
@@ -768,6 +779,16 @@ case $cmd in
     git -C "$r" merge --no-edit "$b" || { git -C "$r" merge --abort || true; die "merge conflicts: aborted, nothing changed"; }
     echo "merged $b into $(git -C "$r" branch --show-current)"
     ;;
+  repos) # repos <hid> — git roots of the project (and --repo worktrees): branch, submodules
+    HID=$1
+    { repos; find "$(jq -r .project "$(reg)")" -maxdepth 2 -name .git -printf '%h\n' 2> /dev/null; } | awk 'NF && !seen[$0]++' | while read -r x; do
+      [[ $(git -C "$x" rev-parse --show-toplevel 2> /dev/null) == "$x" && -z $(git -C "$x" rev-parse --show-superproject-working-tree 2> /dev/null) ]] || continue
+      printf '%s\t%s\n' "$x" "$(git -C "$x" branch --show-current | grep . || echo '(detached)')"
+      git -C "$x" submodule status 2> /dev/null | awk '{print $2}' | while read -r m; do
+        printf '  %s\t%s\n' "$x/$m" "$(git -C "$x/$m" branch --show-current 2> /dev/null | grep . || echo '(detached)')"
+      done
+    done | column -t -s $'\t'
+    ;;
   worktrees) # worktrees <hid> [--repo <path>] — path, branch, dirty|clean
     HID=$1
     [[ ${2:-} != --repo ]] || REPO=$(realpath "${3:?--repo needs a path}")
@@ -965,7 +986,7 @@ case $cmd in
     jset '.closed = true | .shutdown = true | del(.closing_at) | del(.remove_worktrees) | .agents = {}'
     touch "$h/close.done"
     echo "shut down: $s"
-    command -v notify-send > /dev/null && notify-send "drover: $s shut down" || true
+    notify "drover: $s shut down"
     ;;
   doc) # doc <hid> add <abs-path> "<note>" [--agent id] | rm <path> | list — documents worth reading (brief.md and plan.md are listed automatically)
     HID=$1 dj="$ROOT/$HID/docs.json"
@@ -1036,8 +1057,8 @@ case $cmd in
     if ! jq -e '.closed or (.drover.gone_notified // false)' "$(reg)" > /dev/null; then
       jset '.drover.gone_notified = true'
       echo "[drover-sh -> drover] drover tab gone — run drover.sh revive $HID" >> "$ROOT/$HID/inbox/drover.log"
-      command -v notify-send > /dev/null && notify-send "drover: $(sess)" "drover tab gone, run drover.sh revive $HID" || true
+      notify "drover: $(sess)" "drover tab gone, run drover.sh revive $HID"
     fi
     ;;
-  *) die "commands: new spawn dispatch send report answer merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn dispatch send report answer repos merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac
