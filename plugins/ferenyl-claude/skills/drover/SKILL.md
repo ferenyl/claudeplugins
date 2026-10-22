@@ -11,11 +11,12 @@ Control only via `${CLAUDE_SKILL_DIR}/scripts/drover.sh` (below: `drover.sh`). A
 
 ```
 drover.sh new <slug> <project-dir> [--model M] [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
-drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm acceptEdits|plan|...] [--mcp a,b|none] [--allow "Bash(git *),…"]
+drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm auto|acceptEdits|plan|...] [--mcp a,b|none] [--allow "Bash(git *),…"]
 drover.sh dispatch <HID> <tid> [agent]    # idle agent gets the task (owner, in_progress, attempts+, id + acceptance sent)
 drover.sh send <HID> <to> drover "<msg>"   # exit 3 + inbox note if the target's input box holds text (user typing): retry later
 drover.sh answer <HID> <id> "<answer>"    # answers an agent's open `question:` (agents: report <HID> <id> <tid> question "<text>" [--options "a|b"])
 drover.sh model <HID> <id> <model>        # waits for idle
+drover.sh perm <HID> <id> <mode>          # waits for idle, relaunches it (--resume, same tab) in auto|acceptEdits|plan|default
 drover.sh move <HID> <id> <tab|pane:<agent>>   # resumes the session in the new place
 drover.sh kill <HID> <id> [--now [--task todo|failed]]  # refuses busy/blocked or unreported in_progress; ask the user before --now  ·  rename <HID> <slug>  ·  flush <HID> <id> (deliver messages queued while blocked)
 drover.sh worktree <HID> <id> [base] [--branch <name>] [--repo <path>] [--story <sid>] | rm <id>   # branch default drover/<HID>/<id>, base default origin/HEAD; prints path (spawn cwd); rm keeps the branch
@@ -40,7 +41,7 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 - `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all servers, whose tool schemas cost tokens per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
 - Agents prefer Read/Grep/Glob over cat/sed/head/grep in Bash (the agent prompt says so). Per-user rules (hooks, tools) go in `<HID>/rules.md`.
 - `DROVER_NOTIFY=0` in the environment disables desktop notifications (notify-send).
-- Mutating commands (spawn/dispatch/answer/model/move/kill/worktree/merge/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
+- Mutating commands (spawn/dispatch/answer/model/perm/move/kill/worktree/merge/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice, else 2–4 kebab words in the plan. `rename` on request.
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
@@ -61,8 +62,8 @@ haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: 
 `task set` hints when to suggest the next larger model (max opus) and when to ask the user. A drover started on opus for planning switches itself to sonnet (`/model sonnet`) once the plan is accepted; delegation and waiting need no more.
 
 ## Workflow
-1 Plan: show agents+models first. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
-2 Dispatch only what `task next` lists, one task per agent: `spawn ... --task <tid>` or `dispatch` (sets in_progress + attempts, tells the agent the task id; agents `report` it). Use `--perm acceptEdits` for agents that edit files, so they do not block on every prompt.
+1 Plan: show agents+models first. Ask the user (AskUserQuestion, with the plan) whether agents run in auto mode (`--perm auto`) or not (`--perm acceptEdits` for editing agents); the user can switch an agent later (`perm`). A planner agent is spawned with `--perm plan` (Read/Grep/Glob are pre-allowed); its first task: plan, always propose the agents (id, purpose, model, auto or not), finish with ExitPlanMode, then after approval write the plan file and report. Its ExitPlanMode shows as blocked: `read` it, show the plan and agents to the user, who approves in its pane. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
+2 Dispatch only what `task next` lists, one task per agent: `spawn ... --task <tid>` or `dispatch` (sets in_progress + attempts, tells the agent the task id; agents `report` it). Use the mode the user chose in 1 (`--perm auto` or `--perm acceptEdits`) for agents that edit files, so they do not block on every prompt.
 3 Wait: right after every spawn/dispatch/send that starts work, make sure a Monitor on `inbox` is running. `catchup` once, then Monitor `drover.sh inbox <HID>` with timeout_ms 1800000 (max). It expires after that, and /clear or revive ends it: re-arm at once on its expiry notice (no lines are lost) and at the start of every session. On `report: <task> <status> — <summary>` act on the line; reports/<agent>.<task>.md only for detail. `report` errors on an unknown agent or a task owned by another agent (the error names the right id).
 4 Follow the `task set` hints (ask the user after 3 attempts).
 5 Several coding agents in one git repo → one worktree per agent via `worktree` (never `git worktree add` yourself; all go under `<repo-parent>/droverworktrees/`), its path as spawn cwd; never merge without the user's yes (`merge`). Branch names, commit messages and PR text follow the instructions in effect (CLAUDE.md, CONTRIBUTING, PR templates); ask the user if none are given.

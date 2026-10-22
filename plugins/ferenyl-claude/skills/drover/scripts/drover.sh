@@ -202,7 +202,8 @@ Prefer the Read, Grep and Glob tools over cat/sed/head/tail/grep in Bash.
 EOF
   [[ ! -f $h/rules.md ]] || printf '\nRules for all agents (%s):\n%s\n' "$h/rules.md" "$(< "$h/rules.md")" >> "$h/agents/$id.prompt.md"
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" '{permissions: {allow: (["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)"]
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" '{promptSuggestionEnabled: false, permissions: {additionalDirectories: [$h],
+    allow: (["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"]
       + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))))}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
@@ -215,7 +216,7 @@ launch() { # id where cwd model -- claude-args...
   shift 5
   local perm=${PERM:-$(agent "$id" perm)} mcp=()
   [[ ! -f $h/agents/$id.mcp.json ]] || mcp=(--strict-mcp-config --mcp-config "$h/agents/$id.mcp.json") # before another option: --mcp-config takes several values
-  local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude --model "$model" --settings "$h/agents/$id.settings.json"
+  local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$model" --settings "$h/agents/$id.settings.json"
     ${perm:+--permission-mode "$perm"} "${mcp[@]}" --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
   case $where in
     tab)
@@ -270,7 +271,7 @@ write_drover_files() { # settings, launcher and prompts of the in-corral drover
   lsid=$(jq -r '.launcher_session_id // empty' "$(reg)") proj=$(jq -r .project "$(reg)")
   title="drover-$(jq -r .slug "$(reg)")-$HID"
   [[ ! -f $h/brief.md ]] || brief="Task brief: read $h/brief.md and continue from it."
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/drover.json" --arg d "$DIR" '{permissions: {allow: ["Bash(\($d)/drover.sh *)"]}, hooks: {
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/drover.json" --arg d "$DIR" '{promptSuggestionEnabled: false, permissions: {allow: ["Bash(\($d)/drover.sh *)"]}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
@@ -299,7 +300,7 @@ for _ in $(seq 40); do # a 1x1 pane blocks claude on write; wait for a real size
   ((${r:-0} > 5 && ${c:-0} > 20)) && break
   sleep 0.25
 done
-cmd=(env DROVER_HID="$hid" CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude --model "$m" -n "$title" --settings "$h/drover.settings.json")
+cmd=(env DROVER_HID="$hid" CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$m" -n "$title" --settings "$h/drover.settings.json")
 if compgen -G "$HOME/.claude/projects/*/$sid.jsonl" > /dev/null; then
   exec "${cmd[@]}" --resume "$sid" "$(< "$h/drover.prompt.revive")"
 elif [[ $fork == true ]]; then
@@ -477,6 +478,7 @@ case $cmd in
     done
     guard_outside
     [[ $PERM =~ ^[A-Za-z]*$ ]] || die "bad --perm: $PERM"
+    [[ $PERM != plan ]] || ALLOW="Read,Grep,Glob${ALLOW:+,$ALLOW}" # a planner must read without prompts
     [[ -z $tid ]] || has_task "$tid"
     [[ ${id,,} != droverstatusui ]] || die "droverstatusui is reserved for the web user"
     [[ $id != drover ]] || die "drover is reserved"
@@ -706,6 +708,25 @@ case $cmd in
     # shellcheck disable=SC2016
     jset --arg a "$id" --arg m "$model" '.agents[$a].model = $m'
     echo "$id -> $model"
+    banner
+    ;;
+  perm) # perm <hid> <id> <mode> — relaunch the agent (--resume) in its tab with another permission mode
+    HID=$1 id=$2 PERM=${3:?mode}
+    guard_outside
+    [[ $PERM =~ ^[A-Za-z]+$ ]] || die "bad mode: $PERM"
+    [[ -n $(agent "$id" pane_id) ]] || die "unknown agent: $id"
+    wait_idle "$id"
+    sid=$(jq -r '.session_id // empty' "$ROOT/$HID/status/$id.json" 2> /dev/null)
+    sid=${sid:-$(agent "$id" claude_session_id)}
+    old=$(agent "$id" pane_id)
+    type_in "$old" "/exit" 0 || true
+    sleep 2
+    write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
+    read -r tab pane < <(launch "$id" "pane:$id" "$(agent "$id" cwd)" "$(agent "$id" model)" -- --resume "$sid")
+    z close-pane -p "$old" 2> /dev/null || true
+    # shellcheck disable=SC2016
+    jset --arg a "$id" --arg pn "$pane" --arg c "$sid" --arg pm "$PERM" '.agents[$a] += {pane_id: $pn, claude_session_id: $c, perm: $pm}'
+    echo "$id -> $PERM ($pane)"
     banner
     ;;
   move) # move <hid> <id> <tab|pane:<agent>>
