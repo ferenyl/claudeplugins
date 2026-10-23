@@ -181,8 +181,29 @@ mcp_config() { # cwd list: --mcp config with only the named servers (user scope,
       {mcpServers: ($all | with_entries(select(.key | IN($n[]))))} end' || die "bad --mcp: $2"
 }
 
+flow_patterns() { # step: Bash patterns of the CLI commands that perform it (MCP writes are covered by the prompt rule only)
+  case $1 in
+    commit) echo 'Bash(git commit *)' ;;
+    merge-local) echo 'Bash(git merge *)' ;;
+    push | pr-link) echo 'Bash(git push *)' ;;
+    pr | pr-draft) printf '%s\n' 'Bash(gh pr create *)' 'Bash(az repos pr create *)' 'Bash(glab mr create *)' ;;
+    review-post) printf '%s\n' 'Bash(gh pr review *)' 'Bash(gh pr comment *)' 'Bash(az repos pr reviewer *)' 'Bash(glab mr note *)' ;;
+    review-fix) printf '%s\n' 'Bash(git commit *)' 'Bash(git push *)' 'Bash(gh pr comment *)' 'Bash(glab mr note *)' ;;
+    merge-pr) printf '%s\n' 'Bash(gh pr merge *)' 'Bash(az repos pr update *)' 'Bash(glab mr merge *)' ;;
+    tracker-assign) printf '%s\n' 'Bash(gh issue edit *)' 'Bash(az boards work-item update *)' 'Bash(jira issue assign *)' 'Bash(glab issue update *)' ;;
+    tracker-status) printf '%s\n' 'Bash(gh issue close *)' 'Bash(gh issue reopen *)' 'Bash(az boards work-item update *)' 'Bash(jira issue move *)' 'Bash(glab issue close *)' ;;
+    tracker-comment) printf '%s\n' 'Bash(gh issue comment *)' 'Bash(az boards work-item update *)' 'Bash(jira issue comment *)' 'Bash(glab issue note *)' ;;
+    tracker-link) printf '%s\n' 'Bash(gh issue edit *)' 'Bash(az boards work-item relation *)' 'Bash(jira issue link *)' 'Bash(glab issue update *)' ;;
+  esac
+}
+
 write_files() { # id purpose [story]
-  local id=$1 purpose=$2 h="$ROOT/$HID" allow=${ALLOW-$(agent "$1" allow)}
+  local id=$1 purpose=$2 h="$ROOT/$HID" allow=${ALLOW-$(agent "$1" allow)} cov s fa='' fk='' nf
+  cov=" $(flow_steps "${3:-}" | tr '\n' ' ')"
+  for s in $FLOW_STEPS; do
+    if [[ $cov == *" $s "* ]]; then fa+=$'\n'$(flow_patterns "$s"); else fk+=$'\n'$(flow_patterns "$s"); fi
+  done
+  nf=$(flow_json "${3:-}" | jq -r '.file // empty')
   cat > "$h/agents/$id.prompt.md" <<EOF
 You are agent $id in drover $HID. Purpose: $purpose
 Only do what is within your purpose. Edit files only inside your working directory and $h.
@@ -202,9 +223,16 @@ Prefer the Read, Grep and Glob tools over cat/sed/head/tail/grep in Bash.
 EOF
   [[ ! -f $h/rules.md ]] || printf '\nRules for all agents (%s):\n%s\n' "$h/rules.md" "$(< "$h/rules.md")" >> "$h/agents/$id.prompt.md"
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" '{promptSuggestionEnabled: false, permissions: {additionalDirectories: [$h],
+  printf '\nGit/PR flow: %s. Pre-approved: %s. Any other write outside the working tree (commit, push, merge, PR/review/comment/thread, labels, assignment, work item or issue edits) on any host or tracker, by any means (CLI, MCP, API): ask first via report question with the exact action; do it only after the answer says yes; one yes = one action.\n' \
+    "$(flow_line "${3:-}" | cut -d' ' -f1)" "$(flow_steps "${3:-}" | paste -sd' ' | grep . || echo none)" >> "$h/agents/$id.prompt.md"
+  [[ -z $nf || ! -f $nf ]] || printf '\nFlow notes (%s):\n%s\n' "$nf" "$(< "$nf")" >> "$h/agents/$id.prompt.md"
+  [[ ${PERM:-$(agent "$id" perm)} != plan ]] || printf '\nWrite the plan to %s/plan.md before ExitPlanMode.\n' "$h" >> "$h/agents/$id.prompt.md"
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" --arg fa "$fa" --arg fk "$fk" '
+    def lines: split("\n") | map(select(. != ""));
+    ($fa | lines | unique) as $fa | {promptSuggestionEnabled: false, permissions: {additionalDirectories: [$h],
     allow: (["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"]
-      + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))))}, hooks: {
+      + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))) + $fa),
+    ask: (($fk | lines | unique) - $fa)}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
@@ -790,18 +818,104 @@ case $cmd in
     [[ -z $story ]] || "$DIR/drover-story.sh" "$HID" set "$story" branch="$b" worktree="$d/$id" > /dev/null
     echo "$d/$id"
     ;;
-  merge) # merge <hid> <id> [--repo <path>] — merge the agent's branch into the repo's checked-out branch; the drover asks the user first
-    HID=$1 id=${2:?agent id}
-    [[ ${3:-} != --repo ]] || REPO=$(realpath "${4:?--repo needs a path}")
+  merge) # merge <hid> <id> [--repo <path>] [--yes] — merge the agent's branch into the repo's checked-out branch; needs merge-local in the flow, else --yes after the user's yes
+    # shellcheck disable=SC2034
+    HID=$1 id=${2:?agent id} YES=0
+    shift 2
+    while (($#)); do
+      case $1 in
+        --repo) REPO=$(realpath "${2:?--repo needs a path}"); shift 2 ;;
+        --yes) YES=1; shift ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
     guard_outside
     find_repo "$id"
     r=$(repo_root) || die "project is not a git repo (pass --repo <path>)"
     b=$(branch_of "$id")
+    flow_gate merge-local "$(agent "$id" story)" "merge $b into $(git -C "$r" branch --show-current)"
     git -C "$r" show-ref --verify --quiet "refs/heads/$b" || die "no branch $b"
     [[ -z $(git -C "$r" status --porcelain --untracked-files=no) ]] || die "$r has uncommitted changes"
     d=$(wt_dir) && [[ ! -d $d/$id || -z $(git -C "$d/$id" status --porcelain) ]] || die "worktree $id has uncommitted changes"
     git -C "$r" merge --no-edit "$b" || { git -C "$r" merge --abort || true; die "merge conflicts: aborted, nothing changed"; }
     echo "merged $b into $(git -C "$r" branch --show-current)"
+    ;;
+  prlink) # prlink <hid> <id> [--repo <path>] [--yes] — push the agent's branch, print the host's create-PR link (the user opens the PR); needs pr-link or pr in the flow
+    # shellcheck disable=SC2034
+    HID=$1 id=${2:?agent id} YES=0
+    shift 2
+    while (($#)); do
+      case $1 in
+        --repo) REPO=$(realpath "${2:?--repo needs a path}"); shift 2 ;;
+        --yes) YES=1; shift ;;
+        *) die "unknown option: $1" ;;
+      esac
+    done
+    guard_outside
+    find_repo "$id"
+    r=$(repo_root) || die "project is not a git repo (pass --repo <path>)"
+    b=$(branch_of "$id")
+    git -C "$r" show-ref --verify --quiet "refs/heads/$b" || die "no branch $b"
+    flow_gate "pr-link pr" "$(agent "$id" story)" "push $b and open the PR link"
+    git -C "$r" push -u origin "$b" > /dev/null
+    base=$(default_base)
+    compare_url "$(git -C "$r" remote get-url origin)" "${base#origin/}" "$b"
+    ;;
+  flow) # flow <hid> [<name>] [tracker=assign,status,comment,link|-] [--story <sid>] — set (name ask clears) or show the effective flow
+    HID=$1 name='' trk='' story=''
+    shift
+    while (($#)); do
+      case $1 in
+        --story) story=${2:?--story needs a story id}; shift 2 ;;
+        tracker=*) trk=${1#*=}; shift ;;
+        *) name=$1; shift ;;
+      esac
+    done
+    [[ -z $story ]] || has_story "$story"
+    if [[ -n $name$trk ]]; then
+      guard_outside
+      cur=$(flow_json "$story")
+      if [[ $name == ask ]]; then
+        f=null
+      else
+        if [[ -n $name ]]; then f=$(flow_resolve "$name"); else
+          [[ -n $cur ]] || die "no flow set: flow $HID <name> [tracker=…]"
+          f=$(jq -c 'del(.tracker)' <<< "$cur")
+        fi
+        t=$(jq -c '.tracker // []' <<< "${cur:-null}")
+        if [[ -n $trk ]]; then
+          t='[]'
+          [[ $trk == - ]] || for x in ${trk//,/ }; do
+            [[ $x =~ ^(assign|status|comment|link)$ ]] || die "tracker= takes assign,status,comment,link or -: $x"
+            t=$(jq -c --arg x "$x" '. + [$x] | unique' <<< "$t")
+          done
+        fi
+        f=$(jq -c --argjson t "$t" '. + {tracker: $t}' <<< "$f")
+      fi
+      flow_save "$f" "$story"
+      n=0
+      for a in $(jq -r '.agents | keys[]' "$(reg)"); do
+        s=$(agent "$a" story)
+        if [[ -n $story ]]; then [[ $s == "$story" ]] || continue; else [[ -z $s || -z $(flow_story "$s") ]] || continue; fi
+        write_files "$a" "$(agent "$a" purpose)" "$s"
+        (send "$a" drover "Flow is now $(flow_line "$s")") || echo "not delivered to $a" >&2
+        ((++n))
+      done
+      ((n == 0)) || echo "$n agent(s) told; permissions apply fully after perm/move/revive relaunches them" >&2
+    fi
+    echo "flow: $(flow_line "$story")"
+    ;;
+  show) # show <hid> [plan|brief|<path>] — open a document of this corral in a floating pane on the drover tab (the drover never reads it itself)
+    HID=$1 p=${2:-plan} h="$ROOT/$1"
+    case $p in plan | brief) p=$h/$p.md ;; esac
+    p=$(realpath -m "$p")
+    [[ $p == "$h"/* ]] || jq -e --arg p "$p" 'any(.[]?; .path == $p)' "$h/docs.json" > /dev/null 2>&1 || die "not a drover document: $p"
+    [[ -f $p ]] || die "no such file: $p"
+    pager=(less -R)
+    ! command -v bat > /dev/null || pager=(bat --paging=always)
+    tab=$(jq -r '.drover.tab_id // empty' "$(reg)")
+    z new-pane --floating --close-on-exit ${tab:+--tab-id "$tab"} --name show -- "${pager[@]}" "$p" > /dev/null
+    echo "shown $p (q closes)"
     ;;
   repos) # repos <hid> — git roots of the project (and --repo worktrees): branch, submodules
     HID=$1
@@ -1097,5 +1211,5 @@ case $cmd in
       notify "drover: $(sess)" "drover tab gone, run drover.sh revive $HID"
     fi
     ;;
-  *) die "commands: new spawn dispatch send report answer repos merge doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn dispatch send report answer repos merge prlink flow show doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac

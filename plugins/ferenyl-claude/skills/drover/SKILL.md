@@ -22,7 +22,10 @@ drover.sh kill <HID> <id> [--now [--task todo|failed]]  # refuses busy/blocked o
 drover.sh worktree <HID> <id> [base] [--branch <name>] [--repo <path>] [--story <sid>] | rm <id>   # branch default drover/<HID>/<id>, base default origin/HEAD; prints path (spawn cwd); rm keeps the branch
 drover.sh worktrees <HID> [--repo <path>] # path branch dirty|clean
 drover.sh repos <HID>                     # git roots of the project, current branch, submodules
-drover.sh merge <HID> <id> [--repo <path>] # branch into the repo's checked-out branch; only after the user said yes
+drover.sh merge <HID> <id> [--repo <path>] [--yes]  # branch into the checked-out branch; needs merge-local in the flow, else --yes after the user's yes (exit 6 = not in flow)
+drover.sh prlink <HID> <id> [--repo <path>] [--yes]  # push the agent's branch, print the create-PR link (pr-link|pr)
+drover.sh flow <HID> [<name>|ask] [tracker=assign,status,comment,link|-] [--story <sid>]   # set/show the git/PR flow (corral, or one story)
+drover.sh show <HID> [plan|brief|<path>]  # open a corral document in a floating pane on the drover tab (q closes)
 drover.sh task <HID> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"]   # + story=S kind=K: story.md
 drover.sh task <HID> set <task-id> state=S owner=O [attempts+]   # prints hints at 2/3 attempts
 drover.sh task <HID> next | list [state]  # ready to dispatch (deps done) | all, with acceptance
@@ -41,11 +44,12 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 - `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all servers, whose tool schemas cost tokens per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
 - Agents prefer Read/Grep/Glob over cat/sed/head/grep in Bash (the agent prompt says so). Per-user rules (hooks, tools) go in `<HID>/rules.md`.
 - `DROVER_NOTIFY=0` in the environment disables desktop notifications (notify-send). The drover is compacted (`/compact`) automatically when its context passes `DROVER_COMPACT_AT` tokens (default 120000, `0` = off); the inbox Monitor keeps running.
-- Mutating commands (spawn/dispatch/answer/model/perm/move/kill/worktree/merge/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
+- Mutating commands (spawn/dispatch/answer/model/perm/move/kill/worktree/merge/prlink/flow/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice, else 2–4 kebab words in the plan. `rename` on request.
 - id: short kebab-case; purpose from the user, with boundaries.
 - `send` to a blocked agent is queued (inbox says so); after it is unblocked run `flush`. Non-delivery is an error: retry or `read` the pane.
-- `[droverstatusui -> drover]` = the user via the web GUI. Sensitive/irreversible requests (commit, push, merge, PR, close, delete, work-item writes) → `send <HID> droverstatusui drover "Are you sure: <exact action>?"`; act only on an explicit yes from droverstatusui that follows that question. Reply to it the same way.
+- **Write approval** (any host/tracker: GitHub, Azure DevOps, GitLab, Jira, …; any means: drover.sh, CLI, MCP, API): writes outside the working tree — commit, push, merge, PR create/edit/close, PR comments/reviews/votes/thread status, labels, assignment, work item/issue edits — happen only if the effective flow lists the step. Otherwise ask the user about that exact action (AskUserQuestion, or `send <HID> droverstatusui drover "Are you sure: <exact action>?"`); act only on a yes that follows that question; one yes = one action. Never tell an agent to do an uncovered write.
+- `[droverstatusui -> drover]` = the user via the web GUI. Close/delete and other irreversible requests → the same question; act only on an explicit yes from droverstatusui that follows it. Reply to it the same way.
 - `[x -> drover] question: <task> <text>` = agent needs a decision: ask the user (AskUserQuestion with its options), then `answer`. Its story shows waiting-for-user until then.
 - `[x -> drover] blocked:` = agent waits for input; `read` its screen, tell the user.
 - spawn exit 3 = untrusted dir: ask user, rerun with `--trust`, verify via printed dump-screen.
@@ -57,16 +61,23 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 - After /clear a hook reloads this drover's state; continue as drover. In the pane use only `*-by-id`/`--pane-id`/`--tab-id` zellij forms.
 - State: ~/.claude/drover/<HID>/ (registry.json, tasks.json, brief.md, status/, reports/, inbox/drover.log, messages.log).
 
+## Git/PR flows
+A flow = the set of pre-approved steps; unset = `ask` (every write asked). Set per corral (`flow <HID> <name>`), optional override per story (`--story`). Steps: `commit` · `merge-local` · `push` · `pr-link` (push + create-PR link, the user opens the PR) · `pr` / `pr-draft` · `review-post` (comments, never approve/reject votes) · `review-fix` (fix comments, push, reply/resolve) · `checks` · `merge-pr` · `tracker-assign|status|comment|link`.
+Built-in (cumulative): `none` · `commit` · `local-merge` (commit, merge-local) · `push` · `manual-pr` (push, pr-link) · `pr` · `pr-draft` · `pr-review` (pr + review-post) · `pr-fix` (+ review-fix) · `full` (+ checks, merge-pr). `tracker=assign,status,comment,link` toggles tracker steps on any flow.
+Custom: `<project>/.drover/flows/<name>.md`, else `~/.claude/drover/flows/<name>.md`; first line `steps: commit push pr-draft …`, the rest is free text (conventions) appended to agent prompts. Built-in names cannot be shadowed.
+Agents get the flow in their prompt; steps in the flow go to `permissions.allow`, others to `permissions.ask`. A change reaches live agents as a message; permissions fully apply after `perm`/`move`/`revive`.
+Every flow with `pr-link`/`pr`/`pr-draft` runs dev → review (local diff) → pr task via `depends=`; `pr-review`+ add prreview → fix → checks/merge tasks, each `depends=` the previous. A prreview agent that must read PR comments or work-item images gets `--mcp <host server>`.
+
 ## Models (smallest that works; user's choice wins; show per agent in plan)
 haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: normal implementation, tests, known-cause fixes, review · opus: architecture, unclear bugs, big refactors, final review · fable: only if the user asks; never suggest it.
 `task set` hints when to suggest the next larger model (max opus) and when to ask the user. The drover itself stays on sonnet; never switch it to a larger model.
 
 ## Workflow
-1 Plan: show agents+models first. Ask the user (AskUserQuestion, with the plan) whether agents run in auto mode (`--perm auto`) or not (`--perm acceptEdits` for editing agents); the user can switch an agent later (`perm`). A planner agent is spawned with `--perm plan` (Read/Grep/Glob are pre-allowed); its first task: plan, always propose the agents (id, purpose, model, auto or not), finish with ExitPlanMode, then after approval write the plan file and report. Its ExitPlanMode shows as blocked: `read` it, show the plan and agents to the user, who approves in its pane. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
+1 Plan: show agents+models first. Ask the user (AskUserQuestion, with the plan) whether agents run in auto mode (`--perm auto`) or not (`--perm acceptEdits` for editing agents; switch later with `perm`) and which git/PR flow (recommended: `commit`, in story mode `pr-review`; options: that + 3 common; "Other" = any flow or custom name) → `flow`. A planner agent is spawned with `--perm plan` (Read/Grep/Glob are pre-allowed); its first task: plan, always propose the agents (id, purpose, model, auto or not), write the plan to `<HID>/plan.md`, finish with ExitPlanMode, then after approval report. Its ExitPlanMode shows as blocked: `show <HID> plan` (the drover shows docs only via `show`, never Read/cat), then AskUserQuestion approve/changes; approve → tell the planner via `answer`/`send` (or the user approves in its pane); changes → `send` them to the planner. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
 2 Dispatch only what `task next` lists, one task per agent: `spawn ... --task <tid>` or `dispatch` (sets in_progress + attempts, tells the agent the task id; agents `report` it). Use the mode the user chose in 1 (`--perm auto` or `--perm acceptEdits`) for agents that edit files, so they do not block on every prompt.
 3 Wait: right after every spawn/dispatch/send that starts work, make sure a Monitor on `inbox` is running. `catchup` once, then Monitor `drover.sh inbox <HID>` with timeout_ms 1800000 (max). It expires after that, and /clear or revive ends it: re-arm at once on its expiry notice (no lines are lost) and at the start of every session. On `report: <task> <status> — <summary>` act on the line; reports/<agent>.<task>.md only for detail. `report` errors on an unknown agent or a task owned by another agent (the error names the right id).
 4 Follow the `task set` hints (ask the user after 3 attempts).
-5 Several coding agents in one git repo → one worktree per agent via `worktree` (never `git worktree add` yourself; all go under `<repo-parent>/droverworktrees/`), its path as spawn cwd; never merge without the user's yes (`merge`). Branch names, commit messages and PR text follow the instructions in effect (CLAUDE.md, CONTRIBUTING, PR templates); ask the user if none are given.
+5 Several coding agents in one git repo → one worktree per agent via `worktree` (never `git worktree add` yourself; all go under `<repo-parent>/droverworktrees/`), its path as spawn cwd; merge only per the flow (`merge`). Branch names, commit messages and PR text follow the instructions in effect (CLAUDE.md, CONTRIBUTING, PR templates); ask the user if none are given.
 6 Report briefly on state change or when a decision is needed.
 
 ## Token economy

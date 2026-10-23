@@ -3,6 +3,7 @@
 h="$HOME/.claude/drover/$1"
 s=$(jq -r .session "$h/registry.json" 2>/dev/null)
 echo "== $s ==  zellij attach $s  (detach: Ctrl-o d)"
+jq -r '"flow: " + (.flow | if . == null then "ask" else "\(.name) [\(.steps | join(" "))]\(if (.tracker | length) > 0 then " tracker=" + (.tracker | join(",")) else "" end)" end)' "$h/registry.json" 2>/dev/null
 echo "== agents =="
 # one jq over registry + status files; AGE = time since the last hook event, "gone" = pane no longer exists
 shopt -s nullglob

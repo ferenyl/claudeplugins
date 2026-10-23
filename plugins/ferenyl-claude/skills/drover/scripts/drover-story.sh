@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # drover-story.sh <HID> <command> ... — story mode, called via drover.sh story; see ../story.md
-# Tracker writes are only `assign` and `comment` (the drover asks the user first); statuses are never written back.
+# Tracker writes here are only `assign` and `comment`, each gated by the flow (tracker-assign, tracker-comment) or --yes after the user's yes; statuses are never written back.
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
@@ -137,7 +137,8 @@ derive() { # auto status of every story without status_manual (contract table, f
 list() {
   [[ -f $S ]] || { echo "no stories"; return 0; }
   jq -r 'def yn: if . == null then "-" elif . then "y" else "n" end;
-    .story_mode // empty | "mode: \(if .parallel then "parallel" else "sequential" end) planner=\(.planner | yn) pr=\(.pr | yn) pr_review=\(.pr_review | yn)"' "$h/registry.json"
+    .story_mode // empty | "mode: \(if .parallel then "parallel" else "sequential" end) planner=\(.planner | yn)"' "$h/registry.json"
+  echo "flow=$(flow_line)"
   # shellcheck disable=SC2016
   jq -r --slurpfile t "$h/tasks.json" '($t[0] // []) as $tasks | sort_by(.order // 0)[]
     | .id as $i | [$tasks[] | select(.story == $i)] as $st
@@ -258,23 +259,37 @@ case $cmd in
     store "$n"
     derive
     ;;
-  mode) # mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n] [azure_config=DIR|-]
-    m='{}'
+  mode) # mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-] (pr=/pr_review= are aliases for flow=)
+    m='{}' fl='' prv='' prr=''
     for a; do
       case $a in
         parallel | sequential) m=$(jq -c --argjson v "$([[ $a == parallel ]] && echo true || echo false)" '.parallel = $v' <<< "$m") ;;
-        planner=* | pr=* | pr_review=*) m=$(jq -c --arg k "${a%%=*}" --argjson v "$(yn "${a#*=}")" '.[$k] = $v' <<< "$m") ;;
+        planner=*) m=$(jq -c --argjson v "$(yn "${a#*=}")" '.planner = $v' <<< "$m") ;;
+        flow=*) fl=${a#*=} ;;
+        pr=*) prv=$(yn "${a#*=}") ;;
+        pr_review=*) prr=$(yn "${a#*=}") ;;
         azure_config=*) # AZURE_CONFIG_DIR for every az call of this script (not the agents' own az); - clears
           v=${a#*=} v=${v/#\~/$HOME}
           [[ $v == - || -d $v ]] || die "no such directory: $v"
           [[ $v == - ]] || v=$(realpath "$v")
           m=$(jq -c --arg v "$v" '.azure_config = (if $v == "-" then null else $v end)' <<< "$m") ;;
-        *) die "mode parallel|sequential [planner=y|n] [pr=y|n] [pr_review=y|n] [azure_config=DIR|-]" ;;
+        *) die "mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-]" ;;
       esac
     done
+    if [[ -n $prv$prr ]]; then # deprecated aliases
+      if [[ $prr == true ]]; then fl=pr-review
+      elif [[ $prv == true ]]; then fl="pr"
+      elif [[ $prv == false ]]; then fl=commit; fi
+      echo "pr=/pr_review= are deprecated: use flow=${fl:-<name>}" >&2
+    fi
+    if [[ -n $fl ]]; then
+      # shellcheck disable=SC2016
+      flow_save "$(flow_resolve "$fl" | jq -c --argjson t "$(jq -c '.flow.tracker // []' "$h/registry.json")" '. + {tracker: $t}')"
+    fi
     # shellcheck disable=SC2016
     jfile "$h/registry.json" --argjson m "$m" '.story_mode = ((.story_mode // {parallel: false}) + $m)'
     jq -c .story_mode "$h/registry.json"
+    echo "flow=$(flow_line)"
     ;;
   set) # set <sid> status=S|auto blocked="r"|- order=N clarify="text" branch=B worktree=W assignee=A pr=<url|nr> (- = null)
     sid=${1:?sid}
@@ -329,9 +344,11 @@ case $cmd in
     jq -r --arg i "$sid" '.agents | to_entries[] | select(.value.story == $i) | "  \(.key) \(.value.model)"' "$h/registry.json"
     ;;
   derive) derive ;;
-  assign) # assign <sid>: set the tracker assignee to the current CLI user (ask the user first)
-    sid=${1:?sid}
+  assign) # assign <sid> [--yes]: set the tracker assignee to the current CLI user (needs tracker-assign in the flow, else --yes after the user's yes)
+    sid=${1:?sid} YES=0
+    [[ ${2:-} != --yes ]] || YES=1
     need "$sid"
+    flow_gate tracker-assign "$sid" "assign $sid to the current user"
     k=$(story "$sid" key) src=$(story "$sid" source) u=$(story "$sid" url)
     case $(story "$sid" tracker) in
       github)
@@ -352,9 +369,11 @@ case $cmd in
     sset --arg i "$sid" --arg a "$me" --arg t "$(now)" 'map(if .id == $i then .assignee = $a | .updated_at = $t else . end)'
     echo "$sid assigned to $me"
     ;;
-  comment) # comment <sid> "<text>": clarification comment on the work item (ask the user first)
-    sid=${1:?sid} text=${2:?text}
+  comment) # comment <sid> "<text>" [--yes]: clarification comment on the work item (needs tracker-comment in the flow, else --yes after the user's yes)
+    sid=${1:?sid} text=${2:?text} YES=0
+    [[ ${3:-} != --yes ]] || YES=1
     need "$sid"
+    flow_gate tracker-comment "$sid" "comment on $sid: ${text:0:80}"
     k=$(story "$sid" key) src=$(story "$sid" source) u=$(story "$sid" url)
     case $(story "$sid" tracker) in
       github) gh issue comment "$k" -R "$src" --body "$text" > /dev/null || mcp "gh issue comment" "nothing else" ;;
@@ -364,17 +383,20 @@ case $cmd in
     esac
     echo "commented on $sid"
     ;;
-  pr) # pr <sid> [--draft] [--title T] [--body-file F]: push the story branch, create the PR (or record an existing one); title/body per the instructions in effect
+  pr) # pr <sid> [--draft] [--title T] [--body-file F] [--link] [--yes]: push the story branch, create the PR (needs pr|pr-draft in the flow; --link: push and print the create-PR link, needs pr-link|pr); title/body per the instructions in effect
     sid=${1:?sid}
     shift
     need "$sid"
-    draft='' title='' bodyf=''
+    # shellcheck disable=SC2034
+    draft='' title='' bodyf='' link='' YES=0
     while (($#)); do
       case $1 in
         --draft) draft=1; shift ;;
         --title) title=${2:?--title needs a value}; shift 2 ;;
         --body-file) bodyf=${2:?--body-file needs a file}; shift 2 ;;
-        *) die "pr <sid> [--draft] [--title T] [--body-file F]" ;;
+        --link) link=1; shift ;;
+        --yes) YES=1; shift ;;
+        *) die "pr <sid> [--draft] [--title T] [--body-file F] [--link] [--yes]" ;;
       esac
     done
     [[ -z $bodyf || -f $bodyf ]] || die "no such file: $bodyf"
@@ -384,6 +406,15 @@ case $cmd in
     b=${b:-$(git -C "$d" branch --show-current)}
     [[ -n $b ]] || die "no branch for $sid: story set $sid branch=B"
     t=${title:-$(story "$sid" title)} r=$(remote "$d")
+    if [[ -n $link ]]; then
+      flow_gate "pr-link pr" "$sid" "push $b and open the PR link"
+      git -C "$d" push -u origin "$b" > /dev/null
+      base=$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+      compare_url "$r" "${base#origin/}" "$b"
+      exit 0
+    fi
+    if ! flow_has pr "$sid" && flow_has pr-draft "$sid"; then draft=1; fi # pr-draft: only as draft
+    flow_gate "pr pr-draft" "$sid" "push $b and create the PR${draft:+ (draft)}"
     git -C "$d" push -u origin "$b"
     if [[ -n $(gh_repo "$r") ]]; then
       gh pr view "$b" -R "$(gh_repo "$r")" > /dev/null 2>&1 ||
