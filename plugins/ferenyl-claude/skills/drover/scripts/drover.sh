@@ -185,7 +185,7 @@ write_files() { # id purpose [story]
   local id=$1 purpose=$2 h="$ROOT/$HID" allow=${ALLOW-$(agent "$1" allow)}
   cat > "$h/agents/$id.prompt.md" <<EOF
 You are agent $id in drover $HID. Purpose: $purpose
-Only do what is within your purpose.
+Only do what is within your purpose. Edit files only inside your working directory and $h.
 
 Agents (live list, read only if you need to message someone): $h/registry.json
 
