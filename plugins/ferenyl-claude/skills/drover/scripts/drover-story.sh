@@ -411,5 +411,33 @@ case $cmd in
     derive
     list
     ;;
-  *) die "story <HID> fetch|add|mode|set|list|show|assign|comment|pr|sync — see story.md" ;;
+  checks) # checks <sid>: watch the PR's CI checks in the background; one inbox line when they finish (the drover does not poll)
+    sid=${1:?sid}
+    need "$sid"
+    u=$(story "$sid" pr.url)
+    [[ -n $u ]] || die "no PR for $sid: story pr $sid or story set $sid pr=<url|nr>"
+    setsid -f "$DIR/drover-story.sh" "$HID" _checks "$sid" > /dev/null 2>&1 < /dev/null
+    echo "watching the checks of $u: an inbox line follows when they finish"
+    ;;
+  _checks) # internal: runs detached from checks; polls every 30 s, at most 2 h
+    sid=$1 u=$(story "$1" pr.url) n=$(story "$1" pr.number) r=pending
+    for i in $(seq 240); do
+      if [[ $(story "$sid" pr.host) == github ]]; then
+        j=$(gh pr checks "$u" --json bucket 2> /dev/null || true) # non-zero exit while checks fail or are pending
+        # shellcheck disable=SC2016
+        r=$(jq -r 'if length == 0 then "none" elif any(.[]; .bucket == "fail" or .bucket == "cancel") then "failed"
+          elif any(.[]; .bucket == "pending") then "pending" else "passed" end' <<< "${j:-[]}" 2> /dev/null || echo pending)
+      else
+        [[ $u =~ (https://dev\.azure\.com/[^/]+) ]] || [[ $u =~ (https://[^/.]+\.visualstudio\.com) ]] || die "PR host not supported: $u"
+        j=$(az repos pr policy list --id "$n" --org "${BASH_REMATCH[1]}" -o json 2> /dev/null || true)
+        r=$(jq -r 'map(select(.configuration.type.displayName == "Build") | .status) | if length == 0 then "none"
+          elif any(.[]; . == "rejected" or . == "broken") then "failed" elif any(.[]; . == "running" or . == "queued") then "pending" else "passed" end' <<< "${j:-[]}" 2> /dev/null || echo pending)
+      fi
+      [[ $r == pending || ($r == none && $i -lt 10) ]] || break # checks may take a few minutes to show up
+      sleep 30
+    done
+    [[ $r != pending ]] || r="still pending after 2 h"
+    echo "[drover-sh -> drover] checks $sid: $r ($u)" >> "$h/inbox/drover.log"
+    ;;
+  *) die "story <HID> fetch|add|mode|set|list|show|assign|comment|pr|checks|sync — see story.md" ;;
 esac

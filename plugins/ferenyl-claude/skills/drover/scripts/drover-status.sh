@@ -37,9 +37,12 @@ if [[ $s == idle && $ps != idle && $id != drover && -f $h/tasks.json ]]; then # 
     tail -n 50 "$h/inbox/drover.log" 2> /dev/null | grep -qxF "$w" || echo "$w" >> "$h/inbox/drover.log" # once per task
   done
 fi
-if [[ $s == blocked ]]; then
+if [[ $s == blocked && $ps != blocked ]]; then # once until it is unblocked
   [[ $id == drover ]] || echo "[$id -> drover] blocked: needs input/approval" >> "$h/inbox/drover.log"
   notify "drover: $id blocked" "needs input/approval"
+fi
+if [[ $s == idle && $ps != idle && $id == drover && ${DROVER_COMPACT_AT:-120000} != 0 && -n ${ZELLIJ_PANE_ID:-} ]]; then # detached: it waits for the turn to end
+  setsid -f "$(dirname "$0")/drover.sh" _compact "$hid" "terminal_$ZELLIJ_PANE_ID" > /dev/null 2>&1 < /dev/null || true
 fi
 # story mode: blocked/unblocked agents move their stories in and out of waiting-for-user
 [[ $1 == busy || ! -f $h/stories.json ]] || "$(dirname "$0")/drover-story.sh" "$(basename "$h")" derive > /dev/null 2>&1 || true

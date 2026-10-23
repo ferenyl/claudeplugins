@@ -10,7 +10,7 @@ The drover runs in its own Claude inside the corral session (tab `drover`). If `
 Control only via `${CLAUDE_SKILL_DIR}/scripts/drover.sh` (below: `drover.sh`). Always call it by that full path, no variables or `cd` (the allowed-tools pre-approval is a prefix match); no direct zellij for covered actions. A zellij MCP may be used read-only (dump screen, info) and for uncovered requests (resize, float, scrollback), targeting registry.json `.session`/pane ids; never to create/move/close agents or rename the session.
 
 ```
-drover.sh new <slug> <project-dir> [--model M] [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
+drover.sh new <slug> <project-dir> [--brief FILE] [--fork]   # session corral-<slug>-<HID>, prints HID=
 drover.sh spawn <HID> <id> <model> <tab|pane:<agent>> <cwd> "<purpose>" "<first task>" [--trust] [--story <sid>] [--task <tid>] [--perm auto|acceptEdits|plan|...] [--mcp a,b|none] [--allow "Bash(git *),…"]
 drover.sh dispatch <HID> <tid> [agent]    # idle agent gets the task (owner, in_progress, attempts+, id + acceptance sent)
 drover.sh send <HID> <to> drover "<msg>"   # exit 3 + inbox note if the target's input box holds text (user typing): retry later
@@ -37,10 +37,10 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 ```
 
 - Story mode (the user works from issues/work items/stories): read `${CLAUDE_SKILL_DIR}/story.md` first.
-- `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover model defaults to `sonnet` (`--model opus` for large or unclear projects). After `new` give the user the printed attach line and stop: this session can be closed.
+- `new`: write the brief first (user request verbatim, decisions so far, proposed agents+models, constraints, open questions) to a file and pass `--brief`. `--fork` also forks this conversation into the drover (full context; its first prompt forbids rerunning `new`). The drover always runs on `sonnet`: planning belongs to a planner agent. After `new` give the user the printed attach line and stop: this session can be closed.
 - `spawn --mcp a,b`: the agent starts with only those MCP servers (names from ~/.claude.json, project scope or .mcp.json; `none` = no servers; plugin/connector servers cannot be picked). Default is all servers, whose tool schemas cost tokens per agent: pick what its purpose needs. `--allow` appends comma-separated patterns to its permissions.allow. `<HID>/rules.md`, if present, is appended to every agent prompt (applies on spawn/move/revive).
 - Agents prefer Read/Grep/Glob over cat/sed/head/grep in Bash (the agent prompt says so). Per-user rules (hooks, tools) go in `<HID>/rules.md`.
-- `DROVER_NOTIFY=0` in the environment disables desktop notifications (notify-send).
+- `DROVER_NOTIFY=0` in the environment disables desktop notifications (notify-send). The drover is compacted (`/compact`) automatically when its context passes `DROVER_COMPACT_AT` tokens (default 120000, `0` = off); the inbox Monitor keeps running.
 - Mutating commands (spawn/dispatch/answer/model/perm/move/kill/worktree/merge/rename/flush) refuse from outside the drover pane unless `--force` is given right after the HID (`drover.sh spawn <HID> --force ...`). status/read/send/close/revive work from anywhere.
 - slug: user's choice, else 2–4 kebab words in the plan. `rename` on request.
 - id: short kebab-case; purpose from the user, with boundaries.
@@ -59,7 +59,7 @@ drover.sh close <HID> [--remove-worktrees|--keep-worktrees] # ends the whole ses
 
 ## Models (smallest that works; user's choice wins; show per agent in plan)
 haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: normal implementation, tests, known-cause fixes, review · opus: architecture, unclear bugs, big refactors, final review · fable: only if the user asks; never suggest it.
-`task set` hints when to suggest the next larger model (max opus) and when to ask the user. A drover started on opus for planning switches itself to sonnet (`/model sonnet`) once the plan is accepted; delegation and waiting need no more.
+`task set` hints when to suggest the next larger model (max opus) and when to ask the user. The drover itself stays on sonnet; never switch it to a larger model.
 
 ## Workflow
 1 Plan: show agents+models first. Ask the user (AskUserQuestion, with the plan) whether agents run in auto mode (`--perm auto`) or not (`--perm acceptEdits` for editing agents); the user can switch an agent later (`perm`). A planner agent is spawned with `--perm plan` (Read/Grep/Glob are pre-allowed); its first task: plan, always propose the agents (id, purpose, model, auto or not), finish with ExitPlanMode, then after approval write the plan file and report. Its ExitPlanMode shows as blocked: `read` it, show the plan and agents to the user, who approves in its pane. Every delegation (also later user requests and review fixes) first becomes a task via `task add`; `task set` (state todo|in_progress|done|failed) only for corrections.
@@ -72,5 +72,7 @@ haiku: mechanical (tests/builds, format, simple edits, search, docs) · sonnet: 
 ## Token economy
 Every message to an agent is a full turn for it; every inbox line is a full turn for you.
 - Task messages: short; point to files instead of pasting. Don't relay between agents: they message each other directly.
+- Inbox lines arriving within 2 s come as one event (joined with ` ‖ `); `blocked` comes once until the agent is unblocked.
+- Never poll in a loop (`sleep; gh pr checks`): `story checks <sid>` writes one inbox line when CI finishes. Merging, CI and git chores go to an agent or a drover.sh command, not your own Bash.
 - No acks, check-ins or "status?" pings. Don't `status`/`read` after every event; `read <HID> <id> 15` only when blocked or a report is unclear.
 - Reuse an idle agent for the next task in its purpose instead of spawning a new one; `kill` agents with nothing left to do.

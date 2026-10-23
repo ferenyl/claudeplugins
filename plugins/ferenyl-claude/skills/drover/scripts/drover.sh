@@ -267,7 +267,8 @@ write_layout() { # corral.kdl (whole session), corral-tab.kdl / drover-tab.kdl (
 write_drover_files() { # settings, launcher and prompts of the in-corral drover
   local h="$ROOT/$HID" m sid lsid fork title proj brief=
   [[ $(jq -r '.drover.mode // empty' "$(reg)") == corral ]] || return 0
-  m=$(jq -r .drover.model "$(reg)") sid=$(jq -r .drover.session_id "$(reg)") fork=$(jq -r '.drover.fork' "$(reg)")
+  jset '.drover.model = "sonnet"' # also for corrals created on another model
+  m=sonnet sid=$(jq -r .drover.session_id "$(reg)") fork=$(jq -r '.drover.fork' "$(reg)")
   lsid=$(jq -r '.launcher_session_id // empty' "$(reg)") proj=$(jq -r .project "$(reg)")
   title="drover-$(jq -r .slug "$(reg)")-$HID"
   [[ ! -f $h/brief.md ]] || brief="Task brief: read $h/brief.md and continue from it."
@@ -420,14 +421,13 @@ case $cmd in
 esac
 # shellcheck disable=SC2128
 case $cmd in
-  new) # new <slug> <project-dir> [--model M] [--brief FILE] [--fork]
+  new) # new <slug> <project-dir> [--brief FILE] [--fork]
     slug=$1 proj=$(realpath "$2")
     shift 2
     # shellcheck disable=SC1007
-    model=sonnet brief= fork=false
+    model=sonnet brief= fork=false # the drover only delegates and waits: planning runs in a planner agent
     while (($#)); do
       case $1 in
-        --model) model=${2:?--model needs a value}; shift 2 ;;
         --brief) brief=${2:?--brief needs a file}; shift 2 ;;
         --fork) fork=true; shift ;;
         *) die "unknown option: $1" ;;
@@ -695,8 +695,10 @@ case $cmd in
     tp=$!
     trap 'kill $tp 2> /dev/null' EXIT
     while IFS= read -r -u 4 l; do
+      k=1
+      while ((k < 20)) && IFS= read -r -t 2 -u 4 m; do l+=" ‖ $m"; ((++k)); done # lines within 2 s: one Monitor event, one drover turn
       printf '%s\n' "$l"
-      [[ -n ${DROVER_AGENT:-} ]] || { echo $((++n)) > "$of.t" && mv "$of.t" "$of"; }
+      [[ -n ${DROVER_AGENT:-} ]] || { echo $((n += k)) > "$of.t" && mv "$of.t" "$of"; }
     done
     ;;
   model) # model <hid> <id> <model>
@@ -1067,6 +1069,19 @@ case $cmd in
     done
     ;;
   _order) HID=$1; order_tabs ;; # internal: watcher
+  _compact) # internal: from the drover's Stop hook — /compact once its context passes DROVER_COMPACT_AT tokens (every turn rereads it)
+    HID=$1 pane=$2 h="$ROOT/$1"
+    tp=$(jq -r '.transcript_path // empty' "$h/status/drover.json" 2> /dev/null || true)
+    [[ -f $tp ]] || exit 0
+    [[ ! -f $h/compacted ]] || (($(date +%s) - $(stat -c %Y "$h/compacted") > 600)) || exit 0 # no loop on a stale usage line
+    u=$(tac "$tp" | head -n 200 | jq -r 'select(.type == "assistant" and (.isSidechain | not) and .message.usage) | .message.usage
+      | .input_tokens + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)' 2> /dev/null | head -n 1 || true)
+    ((${u:-0} >= ${DROVER_COMPACT_AT:-120000})) || exit 0
+    sleep 3
+    [[ $(state drover) == idle ]] || exit 0 # a queued event started the next turn
+    type_in "$pane" "/compact Keep: standing user instructions, decisions, open questions and threads, agents and their tasks. Drop: tool output, details of finished tasks." 1 1 || exit 0
+    touch "$h/compacted"
+    ;;
   _recreate_corral) # internal: watcher — the dashboard only, never the drover
     HID=$1
     id=$(z new-tab --layout "$ROOT/$HID/corral-tab.kdl" --name corral --no-focus)
