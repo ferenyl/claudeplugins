@@ -151,6 +151,14 @@ close_agent_pane() { # id
   tab_empty "$tab" && z close-tab-by-id "$tab" 2> /dev/null || true
 }
 
+close_show() { # close the floating pane opened by the last `show` (if still open)
+  local p
+  p=$(jq -r '.drover.show_pane // empty' "$(reg)")
+  [[ -n $p ]] || return 0
+  z close-pane -p "$p" 2> /dev/null || true
+  jset 'del(.drover.show_pane)'
+}
+
 # shellcheck disable=SC2016
 task_mark() { # task-id agent: the task is running for agent (call after delivery succeeded); each dispatch restarts it
   tset --arg i "$1" --arg o "$2" '(.[] | select(.id == $i)) |= (.owner = $o | .state = "in_progress" | .attempts = ((.attempts // 0) + 1)
@@ -557,6 +565,7 @@ case $cmd in
   send) # send <hid> <to> <from> <message>
     HID=$1
     send "$2" "$3" "${*:4}"
+    close_show
     ;;
   report) # report <hid> <agent-id> <task-id> <done|blocked|failed|question> <summary|question> [--changed X] [--open Y] [--options "a|b"] — agents
     HID=$1 id=$2 tid=$3 st=$4 sum=$5 changed=- open=- opts=
@@ -695,6 +704,7 @@ case $cmd in
     # shellcheck disable=SC2016
     jfile "$qs" --arg a "$id" 'map(select(.agent != $a))'
     story_derive > /dev/null
+    close_show
     echo "answered: $id"
     ;;
   catchup) # catchup <hid> — recent inbox, dashboard, reports newest first
@@ -915,7 +925,9 @@ case $cmd in
     pager=(less -R)
     ! command -v bat > /dev/null || pager=(bat --paging=always)
     tab=$(jq -r '.drover.tab_id // empty' "$(reg)")
-    z new-pane --floating --close-on-exit ${tab:+--tab-id "$tab"} --name show -- "${pager[@]}" "$p" > /dev/null
+    close_show
+    pane=$(z new-pane --floating --close-on-exit ${tab:+--tab-id "$tab"} --name show -- "${pager[@]}" "$p")
+    jset --arg p "$pane" '.drover.show_pane = $p'
     echo "shown $p (q closes)"
     ;;
   repos) # repos <hid> — git roots of the project (and --repo worktrees): branch, submodules
