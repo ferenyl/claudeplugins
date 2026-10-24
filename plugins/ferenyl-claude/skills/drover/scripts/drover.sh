@@ -188,6 +188,7 @@ flow_patterns() { # step: Bash patterns of the CLI commands that perform it (MCP
     push | pr-link) echo 'Bash(git push *)' ;;
     pr | pr-draft) printf '%s\n' 'Bash(gh pr create *)' 'Bash(az repos pr create *)' 'Bash(glab mr create *)' ;;
     review-post) printf '%s\n' 'Bash(gh pr review *)' 'Bash(gh pr comment *)' 'Bash(az repos pr reviewer *)' 'Bash(glab mr note *)' ;;
+    review-approve) printf '%s\n' 'Bash(gh pr review --approve *)' 'Bash(gh pr review * --approve*)' 'Bash(az repos pr set-vote *)' 'Bash(glab mr approve *)' ;;
     review-fix) printf '%s\n' 'Bash(git commit *)' 'Bash(git push *)' 'Bash(gh pr comment *)' 'Bash(glab mr note *)' ;;
     merge-pr) printf '%s\n' 'Bash(gh pr merge *)' 'Bash(az repos pr update *)' 'Bash(glab mr merge *)' ;;
     tracker-assign) printf '%s\n' 'Bash(gh issue edit *)' 'Bash(az boards work-item update *)' 'Bash(jira issue assign *)' 'Bash(glab issue update *)' ;;

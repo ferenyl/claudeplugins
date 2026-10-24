@@ -259,7 +259,7 @@ case $cmd in
     store "$n"
     derive
     ;;
-  mode) # mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-] (pr=/pr_review= are aliases for flow=)
+  mode) # mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-] [merge_all=squash|merge|-] (pr=/pr_review= are aliases for flow=)
     m='{}' fl='' prv='' prr=''
     for a; do
       case $a in
@@ -273,7 +273,9 @@ case $cmd in
           [[ $v == - || -d $v ]] || die "no such directory: $v"
           [[ $v == - ]] || v=$(realpath "$v")
           m=$(jq -c --arg v "$v" '.azure_config = (if $v == "-" then null else $v end)' <<< "$m") ;;
-        *) die "mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-]" ;;
+        merge_all=squash | merge_all=merge | merge_all=-) # merge-ask: the user's "squash all"/"merge all" for the remaining PRs; - clears
+          m=$(jq -c --arg v "${a#*=}" '.merge_all = (if $v == "-" then null else $v end)' <<< "$m") ;;
+        *) die "mode parallel|sequential [planner=y|n] [flow=<name>] [azure_config=DIR|-] [merge_all=squash|merge|-]" ;;
       esac
     done
     if [[ -n $prv$prr ]]; then # deprecated aliases

@@ -22,7 +22,7 @@ alive() { # 0 alive, 1 dead, 2 unknown (timeout). no pipe from zellij into grep 
 }
 
 # Git/PR flows: a flow is a set of pre-approved steps (see SKILL.md); unset = ask for every write
-FLOW_STEPS="commit merge-local push pr-link pr pr-draft review-post review-fix checks merge-pr tracker-assign tracker-status tracker-comment tracker-link"
+FLOW_STEPS="commit merge-local push pr-link pr pr-draft review-post review-approve review-fix checks merge-pr merge-ask tracker-assign tracker-status tracker-comment tracker-link"
 flow_builtin() { # name: its steps (none = empty); 1 if not a built-in
   case $1 in
     none) ;;
@@ -33,6 +33,8 @@ flow_builtin() { # name: its steps (none = empty); 1 if not a built-in
     pr) echo commit push pr ;;
     pr-draft) echo commit push pr-draft ;;
     pr-review) echo commit push pr review-post ;;
+    pr-approve) echo commit push pr review-post review-approve ;;
+    pr-merge) echo commit push pr review-post review-approve checks merge-ask ;;
     pr-fix) echo commit push pr review-post review-fix ;;
     full) echo commit push pr review-post review-fix checks merge-pr ;;
     *) return 1 ;;
@@ -53,7 +55,7 @@ flow_resolve() { # name: flow json {name, steps, file?}; built-in names cannot b
     jq -nc --arg n "$n" --arg s "$s" --arg f "$f" '{name: $n, steps: ($s | split(" ") | map(select(. != ""))), file: $f}'
     return
   done
-  die "unknown flow: $n (built-in: none commit local-merge push manual-pr pr pr-draft pr-review pr-fix full; custom: <project>/.drover/flows/$n.md or ~/.claude/drover/flows/$n.md with a 'steps:' line)"
+  die "unknown flow: $n (built-in: none commit local-merge push manual-pr pr pr-draft pr-review pr-approve pr-merge pr-fix full; custom: <project>/.drover/flows/$n.md or ~/.claude/drover/flows/$n.md with a 'steps:' line)"
 }
 flow_story() { # sid: the story's own flow json, empty if none
   jq -c --arg i "$1" '.[] | select(.id == $i) | .flow // empty' "$HOME/.claude/drover/$HID/stories.json" 2> /dev/null || true
