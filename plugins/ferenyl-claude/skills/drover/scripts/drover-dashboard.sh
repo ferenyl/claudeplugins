@@ -15,18 +15,18 @@ fi
 panes=$(cat "$c" 2> /dev/null || true)
 jq -rn --slurpfile r "$h/registry.json" --argjson live "${panes:-null}" \
   'reduce inputs as $x ({}; .[input_filename | sub(".*/"; "") | sub("\\.json$"; "")] = $x) as $st
-  | def row($id; $model; $tab; $pane; $purpose):
+  | def row($id; $model; $tab; $pane; $purpose; $perm; $mcp):
       ($st[$id] // null) as $s
       | (if $s == null then "-" else "\($s.state) \($s.at)" end) as $state
       | (if $s == null then "-" elif ($live != null and $pane != "-" and ($live | index($pane) | not)) then "gone"
          else ((now - (try ($s.at | fromdate) catch now)) | floor | if . < 60 then "\(.)s" elif . < 3600 then "\(. / 60 | floor)m" else "\(. / 3600 | floor)h" end) end) as $age
-      | [$id, $model, $tab, $pane, $state, $age, $purpose] | join("\u001f");
+      | [$id, $model, $tab, $pane, $state, $age, $perm, $purpose + " [mcp=\(if $mcp == "" then "-" else $mcp end)]"] | join("\u001f");
     $r[0] as $reg
-    | (if $reg.drover then row("drover"; $reg.drover.model; "drover"; "-"; "orchestrator") else empty end),
-      ($reg.agents | to_entries[] | row(.key; .value.model // "-"; .value.tab_name // "-"; .value.pane_id; .value.purpose))' \
+    | (if $reg.drover then row("drover"; $reg.drover.model; "drover"; "-"; "orchestrator"; "-"; "") else empty end),
+      ($reg.agents | to_entries[] | row(.key; .value.model // "-"; .value.tab_name // "-"; .value.pane_id; .value.purpose; .value.perm // "-"; .value.mcp // ""))' \
   /dev/null "$h"/status/*.json 2> /dev/null |
-while IFS=$'\x1f' read -r id model tab pane st age purpose; do
-  printf '%-16s %-8s %-12s %-12s %-28s %-5s %s\n' "$id" "$model" "$tab" "$pane" "$st" "$age" "$purpose"
+while IFS=$'\x1f' read -r id model tab pane st age perm purpose; do
+  printf '%-16s %-8s %-12s %-12s %-28s %-5s %-8s %s\n' "$id" "$model" "$tab" "$pane" "$st" "$age" "$perm" "$purpose"
 done
 echo; echo "== tasks =="
 jq -r --arg all "${2:-}" '(.[]? | select($all == "--all" or .state != "done") | "\(.id)\t\(.state)\t\(.owner // "-")\t\(.title)"),

@@ -167,8 +167,8 @@ task_mark() { # task-id agent: the task is running for agent (call after deliver
 }
 # shellcheck disable=SC2016
 task_text() { # task-id agent: the message that tells agent its task
-  jq -r --arg i "$1" --arg d "$DIR" --arg h "$HID" --arg a "$2" '.[] | select(.id == $i)
-    | "Task \(.id): \(.title)\(if (.acceptance | length) > 0 then ". Acceptance: " + (.acceptance | join("; ")) else "" end). Report with: \($d)/drover.sh report \($h) \($a) \(.id) done|blocked|failed \"<summary>\""' "$ROOT/$HID/tasks.json"
+  jq -r --arg i "$1" --arg h "$HID" --arg a "$2" '.[] | select(.id == $i)
+    | "Task \(.id) (owner \($a)): \(.title)\(if (.acceptance | length) > 0 then ". Acceptance: " + (.acceptance | join("; ")) else "" end). Report with: drover.sh report \($h) \($a) \(.id) done|blocked|failed \"<summary>\""' "$ROOT/$HID/tasks.json"
 }
 has_task() { jq -e --arg i "$1" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || die "unknown task: $1"; }
 
@@ -185,8 +185,8 @@ mcp_config() { # cwd list: --mcp config with only the named servers (user scope,
     ($l | split(",") | map(gsub("\\s"; "")) | map(select(. != "" and . != "none"))) as $n
     | (($u[0].mcpServers // {}) + ([$dirs[] | $u[0].projects[.].mcpServers // {}] | add // {}) + $p.mcpServers) as $all
     | ($n - ($all | keys)) as $miss
-    | if ($miss | length) > 0 then error("unknown mcp server(s): \($miss | join(", ")) (plugin/connector servers cannot be selected)") else
-      {mcpServers: ($all | with_entries(select(.key | IN($n[]))))} end' || die "bad --mcp: $2"
+    | if ($miss | length) > 0 then ("unknown MCP server \($miss | join(", ")); known: \($all | keys | join(", "))\n" | halt_error(2)) else
+      {mcpServers: ($all | with_entries(select(.key | IN($n[]))))} end'
 }
 
 flow_patterns() { # step: Bash patterns of the CLI commands that perform it (MCP writes are covered by the prompt rule only)
@@ -220,26 +220,30 @@ Only do what is within your purpose. Edit files only inside your working directo
 Agents (live list, read only if you need to message someone): $h/registry.json
 
 Messages cost the receiver a full turn: send one only when you are blocked on another agent or have a finished result it needs. No progress updates, acks or thanks; do not reply to a message unless it asks something.
-$DIR/drover.sh send $HID <to-id|drover> $id "<one-line message>"
+drover.sh send $HID <to-id|drover> $id "<one-line message>"
 Longer content: write a file in $h and send the path.
 
 When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.<task-id>.md first; this records the result and tells the drover:
-$DIR/drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
-To ask the drover or the user a question instead of finishing: $DIR/drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
+drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
+To ask the drover or the user a question instead of finishing: drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
 Then stop and wait.
 
-Prefer the Read, Grep and Glob tools over cat/sed/head/tail/grep in Bash.
+Search code with the jcodemunch MCP first when available; use Read for config, logs, JSON and docs; if a tool call is denied, switch tool, never retry it via Bash.
 EOF
-  [[ ! -f $h/rules.md ]] || printf '\nRules for all agents (%s):\n%s\n' "$h/rules.md" "$(< "$h/rules.md")" >> "$h/agents/$id.prompt.md"
+  local rf
+  for rf in "$HOME/.claude/drover/rules.md" "$h/rules.md"; do
+    grep -qv '^[[:space:]]*\(#\|$\)' "$rf" 2> /dev/null || continue # missing, empty or comments only
+    printf '\nRules for all agents (%s):\n%s\n' "$rf" "$(< "$rf")" >> "$h/agents/$id.prompt.md"
+  done
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
   printf '\nGit/PR flow: %s. Pre-approved: %s. Any other write outside the working tree (commit, push, merge, PR/review/comment/thread, labels, assignment, work item or issue edits) on any host or tracker, by any means (CLI, MCP, API): ask first via report question with the exact action; do it only after the answer says yes; one yes = one action.\n' \
     "$(flow_line "${3:-}" | cut -d' ' -f1)" "$(flow_steps "${3:-}" | paste -sd' ' | grep . || echo none)" >> "$h/agents/$id.prompt.md"
   [[ -z $nf || ! -f $nf ]] || printf '\nFlow notes (%s):\n%s\n' "$nf" "$(< "$nf")" >> "$h/agents/$id.prompt.md"
-  [[ ${PERM:-$(agent "$id" perm)} != plan ]] || printf '\nWrite the plan to %s/plan.md before ExitPlanMode.\n' "$h" >> "$h/agents/$id.prompt.md"
+  [[ ${PERM:-$(agent "$id" perm)} != plan ]] || printf '\nWrite the plan to %s/plan.md (Write is pre-allowed there), then report done; do not call ExitPlanMode.\n' "$h" >> "$h/agents/$id.prompt.md"
   jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" --arg fa "$fa" --arg fk "$fk" '
     def lines: split("\n") | map(select(. != ""));
     ($fa | lines | unique) as $fa | {promptSuggestionEnabled: false, permissions: {additionalDirectories: [$h],
-    allow: (["Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"]
+    allow: (["Bash(drover.sh send *)", "Bash(drover.sh report *)", "Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"]
       + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))) + $fa),
     ask: (($fk | lines | unique) - $fa)}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
@@ -253,7 +257,7 @@ launch() { # id where cwd model -- claude-args...
   shift 5
   local perm=${PERM:-$(agent "$id" perm)} mcp=()
   [[ ! -f $h/agents/$id.mcp.json ]] || mcp=(--strict-mcp-config --mcp-config "$h/agents/$id.mcp.json") # before another option: --mcp-config takes several values
-  local cmd=("${CLEAN_ENV[@]}" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$model" --settings "$h/agents/$id.settings.json"
+  local cmd=("${CLEAN_ENV[@]}" "PATH=$DIR:$PATH" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$model" --settings "$h/agents/$id.settings.json"
     ${perm:+--permission-mode "$perm"} "${mcp[@]}" --append-system-prompt-file "$h/agents/$id.prompt.md" -n "$HID/$id" "$@")
   case $where in
     tab)
@@ -309,7 +313,7 @@ write_drover_files() { # settings, launcher and prompts of the in-corral drover
   lsid=$(jq -r '.launcher_session_id // empty' "$(reg)") proj=$(jq -r .project "$(reg)")
   title="drover-$(jq -r .slug "$(reg)")-$HID"
   [[ ! -f $h/brief.md ]] || brief="Task brief: read $h/brief.md and continue from it."
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/drover.json" --arg d "$DIR" '{promptSuggestionEnabled: false, permissions: {allow: ["Bash(\($d)/drover.sh *)"]}, hooks: {
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/drover.json" --arg d "$DIR" '{promptSuggestionEnabled: false, permissions: {allow: ["Bash(\($d)/drover.sh *)", "Bash(drover.sh *)"]}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
@@ -329,7 +333,7 @@ This corral (HID $HID) was closed or its drover exited, and has been revived. Do
 EOF
   {
     echo '#!/usr/bin/env bash'
-    printf 'h=%q sid=%q lsid=%q fork=%q m=%q title=%q cwd=%q hid=%q\n' "$h" "$sid" "$lsid" "$fork" "$m" "$title" "$(jq -r .drover_cwd "$(reg)")" "$HID"
+    printf 'h=%q sid=%q lsid=%q fork=%q m=%q title=%q cwd=%q hid=%q dir=%q\n' "$h" "$sid" "$lsid" "$fork" "$m" "$title" "$(jq -r .drover_cwd "$(reg)")" "$HID" "$DIR"
     cat <<'EOS'
 echo $$ > "$h/drover.pid"
 cd "$cwd" || exit 1
@@ -338,7 +342,7 @@ for _ in $(seq 40); do # a 1x1 pane blocks claude on write; wait for a real size
   ((${r:-0} > 5 && ${c:-0} > 20)) && break
   sleep 0.25
 done
-cmd=(env DROVER_HID="$hid" CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$m" -n "$title" --settings "$h/drover.settings.json")
+cmd=(env "PATH=$dir:$PATH" DROVER_HID="$hid" CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$m" -n "$title" --settings "$h/drover.settings.json")
 if compgen -G "$HOME/.claude/projects/*/$sid.jsonl" > /dev/null; then
   exec "${cmd[@]}" --resume "$sid" "$(< "$h/drover.prompt.revive")"
 elif [[ $fork == true ]]; then
@@ -453,7 +457,7 @@ if [[ ${2:-} == --force ]]; then # drover.sh <cmd> <HID> --force ...
 fi
 # shellcheck disable=SC2128
 case $cmd in
-  ''|new|gc|_*) ;;
+  ''|new|gc|pref|_*) ;;
   *) [[ ${1:-} =~ ^[0-9a-f]{8}$ && -f $ROOT/$1/registry.json ]] || die "unknown drover id: ${1:-}" ;;
 esac
 # shellcheck disable=SC2128
@@ -490,6 +494,12 @@ case $cmd in
     echo '[]' > "$h/tasks.json"
     : > "$h/messages.log"
     [[ -z $brief ]] || cp "$brief" "$h/brief.md"
+    if [[ ! -f $ROOT/rules.md ]]; then
+      printf '# Rules for all agents of every corral (added to each agent prompt, before <HID>/rules.md).\n# May widen the default "edit only inside your working directory and the corral folder".\n' > "$ROOT/rules.md"
+    fi
+    if [[ ! -f $h/rules.md ]] && jq -e '.mcpServers.jcodemunch' "$HOME/.claude.json" > /dev/null 2>&1; then
+      echo 'Search code with the jcodemunch MCP first (index the repo if needed); Read only for config, logs, JSON and docs.' > "$h/rules.md"
+    fi
     write_drover_files
     write_layout
     start_session "$S" "$proj"
@@ -499,7 +509,7 @@ case $cmd in
     banner
     echo "The drover runs inside the corral (tab drover). Attach with the command above; this session can be closed."
     ;;
-  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>] [--task <tid>] [--perm <mode>] [--mcp a,b|none] [--allow "Bash(git *),…"]
+  spawn) # spawn <hid> <id> <model> <tab|pane:<agent>> <cwd> <purpose> <first task> [--trust] [--story <sid>] [--task <tid>] [--perm <mode>] [--mcp a,b|none] [--allow "Bash(git status *),Bash(git diff *),…"]
     HID=$1 id=$2 model=$3 where=$4 cwd=$(realpath "$5") purpose=$6 task=$7 trust='' story='' tid='' PERM='' ALLOW='' mcps=''
     shift 7
     while (($#)); do
@@ -528,20 +538,24 @@ case $cmd in
     if ! trusted "$cwd" && [[ $trust != --trust ]]; then
       echo "UNTRUSTED $cwd — ask the user, then run again with --trust" >&2; exit 3
     fi
-    write_files "$id" "$purpose" "$story"
     rm -f "$ROOT/$HID/agents/$id.mcp.json"
-    if [[ -n $mcps ]]; then # built first: a failure leaves no file; the file holds server secrets
-      mcpcfg=$(mcp_config "$cwd" "$mcps")
-      (umask 077; printf '%s\n' "$mcpcfg" > "$ROOT/$HID/agents/$id.mcp.json")
+    mcpcfg=''
+    if [[ -n $mcps ]]; then # validated before anything is written: an unknown server exits 2
+      mcpcfg=$(mcp_config "$cwd" "$mcps") || exit 2
+      for m in $(jq -r '.mcpServers | keys[]' <<< "$mcpcfg"); do
+        [[ ,${ALLOW// /}, == *,mcp__$m,* ]] || ALLOW="${ALLOW:+$ALLOW,}mcp__$m"
+      done
     fi
+    write_files "$id" "$purpose" "$story"
+    [[ -z $mcps ]] || (umask 077; printf '%s\n' "$mcpcfg" > "$ROOT/$HID/agents/$id.mcp.json") # the file holds server secrets
     [[ -z $tid ]] || task="$task $(task_text "$tid" "$id")"
     csid=$(cat /proc/sys/kernel/random/uuid)
     read -r tab pane < <(launch "$id" "$where" "$cwd" "$model" -- --session-id "$csid" -- "$task")
     # shellcheck disable=SC2015,SC2016
     jset --arg a "$id" --arg p "$purpose" --arg m "$model" --argjson t "$tab" --arg pn "$pane" \
-      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" --arg al "$ALLOW" \
+      --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" --arg al "$ALLOW" --arg mc "$mcps" \
       '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}
-        + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end + if $al == "" then {} else {allow: $al} end'
+        + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end + if $al == "" then {} else {allow: $al} end + if $mc == "" then {} else {mcp: $mc} end'
     if [[ $trust == --trust ]] && ! trusted "$cwd"; then
       sleep 4
       z send-keys -p "$pane" Down Enter
@@ -607,6 +621,7 @@ case $cmd in
       jfile "$qs" --arg a "$id" --arg t "$tid" --arg q "$sum" --arg o "$opts" --arg at "$now" \
         --arg s "$qstory" \
         'map(select(.agent != $a)) + [{agent: $a, task: $t, text: $q, options: $o, story: $s, at: $at}]'
+      notify "drover: $id question" "$tid ${sum:0:100}"
       send drover "$id" "question: $tid ${sum:0:300}${opts:+ [options: $opts]} — answer: drover.sh answer $HID $id \"<answer>\""
     else
       send drover "$id" "report: $tid $st$($known || echo ' (unknown task)')${sum:+ — ${sum:0:140}}"
@@ -633,6 +648,7 @@ case $cmd in
         [[ -n $title ]] || die "empty title"
         [[ -f $t ]] || echo '[]' > "$t"
         jq -e --arg i "$tid" 'any(.[]; .id == $i)' "$t" > /dev/null && die "task exists: $tid"
+        [[ -z $(agent "$tid" pane_id) ]] || echo "warning: task id $tid equals agent id $tid; reports and messages may be mixed up" >&2
         owner='' dep='' acc='' story='' kind=''
         for kv in "$@"; do
           case $kv in
@@ -710,6 +726,7 @@ case $cmd in
   catchup) # catchup <hid> — recent inbox, dashboard, reports newest first
     HID=$1 h="$ROOT/$HID"
     echo "== inbox =="
+    [[ ! -s $h/inbox/drover.log ]] || echo "last inbox line: $(($(date +%s) - $(stat -c %Y "$h/inbox/drover.log"))) s ago"
     c=$(wc -l < "$h/inbox/drover.log" 2> /dev/null || echo 0)
     [[ -n ${DROVER_AGENT:-} ]] || echo "$c" > "$h/inbox/offset" # the drover's next `inbox` resumes after these lines
     head -n "$c" "$h/inbox/drover.log" 2> /dev/null | tail -n 20 || true
@@ -722,6 +739,16 @@ case $cmd in
       # shellcheck disable=SC2016
       jq -r --arg a "${f%.json}" '"\($a): \(.task) \(.status) — \(.summary)"' "$h/reports/$f"
     done
+    ;;
+  pref) # pref [key [value]] — get/set ~/.claude/drover/prefs.json (no key: print all)
+    f="$ROOT/prefs.json"
+    [[ -f $f ]] || echo '{}' > "$f"
+    if [[ -z ${1:-} ]]; then cat "$f"
+    elif [[ -z ${2:-} ]]; then jq -r --arg k "$1" '.[$k] // empty' "$f"
+    else
+      # shellcheck disable=SC2016
+      jfile "$f" --arg k "$1" --arg v "$2" '.[$k] = $v'
+    fi
     ;;
   inbox) # inbox <hid> — follow new inbox lines (for Monitor)
     HID=$1 f="$ROOT/$1/inbox/drover.log"
@@ -955,13 +982,14 @@ case $cmd in
       done
     done
     ;;
-  kill) # kill <hid> <id> [--now [--task todo|failed]] — refuses a busy/blocked agent or unreported in_progress task unless --now
-    HID=$1 id=$2 now=false ts=todo tgiven=false
+  kill) # kill <hid> <id> [--now [--task todo|failed]] [--reason "<text>"] — refuses a busy/blocked agent or unreported in_progress task unless --now
+    HID=$1 id=$2 now=false ts=todo tgiven=false reason=''
     shift 2
     while (($#)); do
       case $1 in
         --now) now=true; shift ;;
         --task) ts=${2:?--task needs todo|failed} tgiven=true; shift 2 ;;
+        --reason) reason=${2:?--reason needs a text}; shift 2 ;;
         *) die "unknown option: $1" ;;
       esac
     done
@@ -990,6 +1018,11 @@ case $cmd in
     # shellcheck disable=SC2016
     [[ ! -f $ROOT/$HID/questions.json ]] || jfile "$ROOT/$HID/questions.json" --arg a "$id" 'map(select(.agent != $a))'
     story_derive > /dev/null
+    if [[ -n $reason ]]; then
+      reason=${reason//$'\n'/ }
+      echo "$(date -Is) [drover-sh] closed $id: $reason" >> "$ROOT/$HID/messages.log"
+      echo "[drover-sh -> drover] closed $id: $reason" >> "$ROOT/$HID/inbox/drover.log"
+    fi
     echo "closed: $id"
     banner
     ;;
@@ -1137,7 +1170,6 @@ case $cmd in
     jset '.closed = true | .shutdown = true | del(.closing_at) | del(.remove_worktrees) | .agents = {}'
     touch "$h/close.done"
     echo "shut down: $s"
-    notify "drover: $s shut down"
     ;;
   doc) # doc <hid> add <abs-path> "<note>" [--agent id] | rm <path> | list — documents worth reading (brief.md and plan.md are listed automatically)
     HID=$1 dj="$ROOT/$HID/docs.json"
@@ -1224,5 +1256,5 @@ case $cmd in
       notify "drover: $(sess)" "drover tab gone, run drover.sh revive $HID"
     fi
     ;;
-  *) die "commands: new spawn dispatch send report answer repos merge prlink flow show doc gc task story catchup inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
+  *) die "commands: new spawn dispatch send report answer repos merge prlink flow show doc gc task story catchup pref inbox model move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)" ;;
 esac

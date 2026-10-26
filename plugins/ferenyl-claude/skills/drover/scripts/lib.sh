@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # Shared by drover.sh and drover-story.sh (sourced).
 die() { echo "$*" >&2; exit 1; }
-notify() { # notify-send args; DROVER_NOTIFY=0 turns notifications off
-  [[ ${DROVER_NOTIFY:-1} != 0 ]] && command -v notify-send > /dev/null && notify-send "$@" || true
+notify() { # notify-send args; off with DROVER_NOTIFY=0 or preferredNotifChannel "notifications_disabled" in ~/.claude/settings.json
+  [[ ${DROVER_NOTIFY:-1} != 0 ]] && [[ $(jq -r '.preferredNotifChannel // empty' "$HOME/.claude/settings.json" 2> /dev/null) != notifications_disabled ]] \
+    && command -v notify-send > /dev/null && notify-send "$@" || true
 }
 jfile() { # file jq-args...: several writers (close, watcher, hooks): serialize on a lock, write via a private temp file
   local f=$1; shift
