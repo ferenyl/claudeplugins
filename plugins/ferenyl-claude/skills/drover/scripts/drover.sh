@@ -94,11 +94,35 @@ _type_in() { # pane text [verify=1]: paste once, settle, Enter until the input b
   return 1
 }
 
+relaunch() { # id: restart the agent with --resume in its place (PERM, purpose and story from the registry)
+  local id=$1 sid old tab pane
+  [[ -n $(agent "$id" pane_id) ]] || die "unknown agent: $id"
+  wait_idle "$id"
+  sid=$(jq -r '.session_id // empty' "$ROOT/$HID/status/$id.json" 2> /dev/null)
+  sid=${sid:-$(agent "$id" claude_session_id)}
+  old=$(agent "$id" pane_id)
+  type_in "$old" "/exit" 0 || true
+  sleep 2
+  write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
+  read -r tab pane < <(launch "$id" "pane:$id" "$(agent "$id" cwd)" "$(agent "$id" model)" -- --resume "$sid")
+  z close-pane -p "$old" 2> /dev/null || true
+  # shellcheck disable=SC2016
+  jset --arg a "$id" --arg pn "$pane" --arg c "$sid" '.agents[$a] += {pane_id: $pn, claude_session_id: $c}'
+}
+watcher_alive() { # a drover `inbox` (Monitor) is running: pid file + kill -0
+  local p
+  p=$(cat "$ROOT/$HID/inbox/pid" 2> /dev/null) || return 1
+  [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2> /dev/null
+}
+inbox_hint() { watcher_alive || echo "no live inbox watcher — re-arm Monitor: drover.sh inbox $HID" >&2; }
+
 send() { # to from msg
   local to=$1 from=$2 msg=$3 h="$ROOT/$HID" line pane rc
   from=${from//$'\n'/ } msg=${msg//$'\n'/ } # one log line per message: no forged "[droverstatusui -> ...]" lines
   line="[$from -> $to] $msg"
   [[ ${from,,} != droverstatusui || -z ${DROVER_AGENT:-} ]] || die "droverstatusui is the web user; agents must not send as it"
+  [[ ${from,,} != drover || -z ${DROVER_AGENT:-} ]] || die "agents must not send as drover"
+  [[ $from != drover || $to == drover || $to == droverstatusui || -n ${DROVER_AGENT:-} ]] || inbox_hint
   if [[ $to == droverstatusui ]]; then # the web GUI is not an agent: log only, the dashboard reads messages.log
     :
   elif [[ $to == drover ]]; then
@@ -168,7 +192,7 @@ task_mark() { # task-id agent: the task is running for agent (call after deliver
 # shellcheck disable=SC2016
 task_text() { # task-id agent: the message that tells agent its task
   jq -r --arg i "$1" --arg h "$HID" --arg a "$2" '.[] | select(.id == $i)
-    | "Task \(.id) (owner \($a)): \(.title)\(if (.acceptance | length) > 0 then ". Acceptance: " + (.acceptance | join("; ")) else "" end). Report with: drover.sh report \($h) \($a) \(.id) done|blocked|failed \"<summary>\""' "$ROOT/$HID/tasks.json"
+    | "Task \(.id) (owner \($a)): \(.title)\(if (.acceptance | length) > 0 then ". Acceptance: " + (.acceptance | join("; ")) else "" end)\(if (.approved | length) > 0 then ". Approved by the drover for this task: " + (.approved | join("; ")) else "" end). Report with: drover.sh report \($h) \($a) \(.id) done|blocked|failed \"<summary>\""' "$ROOT/$HID/tasks.json"
 }
 has_task() { jq -e --arg i "$1" 'any(.[]; .id == $i)' "$ROOT/$HID/tasks.json" > /dev/null 2>&1 || die "unknown task: $1"; }
 
@@ -236,7 +260,7 @@ EOF
     printf '\nRules for all agents (%s):\n%s\n' "$rf" "$(< "$rf")" >> "$h/agents/$id.prompt.md"
   done
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
-  printf '\nGit/PR flow: %s. Pre-approved: %s. Any other write outside the working tree (commit, push, merge, PR/review/comment/thread, labels, assignment, work item or issue edits) on any host or tracker, by any means (CLI, MCP, API): ask first via report question with the exact action; do it only after the answer says yes; one yes = one action.\n' \
+  printf '\nGit/PR flow: %s. Pre-approved: %s. Any other write outside the working tree (commit, push, merge, PR/review/comment/thread, labels, assignment, work item or issue edits) on any host or tracker, by any means (CLI, MCP, API): ask first via report question with the exact action; do it only after the answer says yes; one yes = one action. Exception: a message from the drover "approved for task <id>: <scope>" (or the same under "Approved by the drover" in your task) covers exactly the writes named in that scope, for that task only; nothing else counts as approval.\nRevise large files with Edit, never rewrite them whole.\n' \
     "$(flow_line "${3:-}" | cut -d' ' -f1)" "$(flow_steps "${3:-}" | paste -sd' ' | grep . || echo none)" >> "$h/agents/$id.prompt.md"
   [[ -z $nf || ! -f $nf ]] || printf '\nFlow notes (%s):\n%s\n' "$nf" "$(< "$nf")" >> "$h/agents/$id.prompt.md"
   [[ ${PERM:-$(agent "$id" perm)} != plan ]] || printf '\nWrite the plan to %s/plan.md (Write is pre-allowed there), then report done; do not call ExitPlanMode.\n' "$h" >> "$h/agents/$id.prompt.md"
@@ -458,7 +482,9 @@ fi
 # shellcheck disable=SC2128
 case $cmd in
   ''|new|gc|pref|_*) ;;
-  *) [[ ${1:-} =~ ^[0-9a-f]{8}$ && -f $ROOT/$1/registry.json ]] || die "unknown drover id: ${1:-}" ;;
+  help) ;;
+  *) [[ ${1:-} =~ ^[0-9a-f]{8}$ ]] || die "usage: drover.sh <cmd> <HID> … — drover.sh help <cmd>"
+     [[ -f $ROOT/$1/registry.json ]] || die "unknown drover id: $1" ;;
 esac
 # shellcheck disable=SC2128
 case $cmd in
@@ -564,20 +590,32 @@ case $cmd in
     [[ -z $tid ]] || task_mark "$tid" "$id"
     echo "$id $pane (tab $tab, $model)"
     banner
+    [[ -n ${DROVER_AGENT:-} ]] || inbox_hint
     ;;
-  dispatch) # dispatch <hid> <task-id> [agent] — give an idle agent its task (owner defaults to the task's owner)
-    HID=$1 tid=${2:?task id}
+  dispatch) # dispatch <hid> <task-id> [agent] [--fresh] — give an idle agent its task (owner defaults to the task's owner); --fresh: /clear its context first (new phase)
+    HID=$1 tid=${2:?task id} fresh=0 id=
+    shift 2
+    for a in "$@"; do
+      if [[ $a == --fresh ]]; then fresh=1; else id=$a; fi
+    done
     guard_outside
     has_task "$tid"
-    id=${3:-$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json")}
+    id=${id:-$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json")}
     [[ -n $id && -n $(agent "$id" pane_id) ]] || die "no agent to dispatch to (pass one: dispatch $HID $tid <agent>)"
     [[ $(state "$id") == idle ]] || die "$id is not idle (state: $(state "$id"))"
+    if ((fresh)); then
+      type_in "$(agent "$id" pane_id)" "/clear" || die "/clear not delivered to $id"
+      sleep 2
+      wait_idle "$id"
+    fi
     send "$id" drover "$(task_text "$tid" "$id")"
     task_mark "$tid" "$id"
     echo "$tid -> $id"
     ;;
   send) # send <hid> <to> <from> <message>
     HID=$1
+    (($# >= 4)) && [[ -n $(trim "${*:4}") ]] || die "usage: drover.sh send <HID> <to> <from> <message> — drover.sh help send"
+    [[ $3 == drover || $3 == droverstatusui ]] || valid_id "$3" from
     send "$2" "$3" "${*:4}"
     close_show
     ;;
@@ -753,18 +791,25 @@ case $cmd in
   inbox) # inbox <hid> — follow new inbox lines (for Monitor)
     HID=$1 f="$ROOT/$1/inbox/drover.log"
     touch "$f"
+    pf="$ROOT/$1/inbox/pid"
+    if [[ -z ${DROVER_AGENT:-} ]]; then # newest drover watcher wins: also ends orphaned ones (e.g. a Bash run_in_background)
+      op=$(cat "$pf" 2> /dev/null || true)
+      [[ ! $op =~ ^[0-9]+$ || $op == "$$" ]] || ! tr '\0' ' ' < "/proc/$op/cmdline" 2> /dev/null | grep -q "drover.sh inbox $1" || kill "$op" 2> /dev/null || true
+      echo "$$" > "$pf"
+    fi
     of="$ROOT/$1/inbox/offset" # lines delivered to the drover's Monitor: catchup sets it, this loop advances it, so a re-armed Monitor loses nothing
     n=''
     [[ -n ${DROVER_AGENT:-} ]] || n=$(cat "$of" 2> /dev/null || true) # agents' Monitors never touch it
     [[ -n $n ]] || n=$(wc -l < "$f")
     exec 4< <(tail -n "+$((n + 1))" -F "$f")
     tp=$!
-    trap 'kill $tp 2> /dev/null' EXIT
+    # shellcheck disable=SC2064
+    trap "kill $tp 2> /dev/null; [[ \$(cat '$pf' 2> /dev/null) != $$ ]] || rm -f '$pf'" EXIT
     while IFS= read -r -u 4 l; do
       k=1
       while ((k < 20)) && IFS= read -r -t 2 -u 4 m; do l+=" ‖ $m"; ((++k)); done # lines within 2 s: one Monitor event, one drover turn
       printf '%s\n' "$l"
-      [[ -n ${DROVER_AGENT:-} ]] || { echo $((n += k)) > "$of.t" && mv "$of.t" "$of"; }
+      [[ -n ${DROVER_AGENT:-} ]] || { echo $((n += k)) > "$of.$$" && mv "$of.$$" "$of" || true; }
     done
     ;;
   model) # model <hid> <id> <model>
@@ -782,20 +827,32 @@ case $cmd in
     HID=$1 id=$2 PERM=${3:?mode}
     guard_outside
     [[ $PERM =~ ^[A-Za-z]+$ ]] || die "bad mode: $PERM"
-    [[ -n $(agent "$id" pane_id) ]] || die "unknown agent: $id"
-    wait_idle "$id"
-    sid=$(jq -r '.session_id // empty' "$ROOT/$HID/status/$id.json" 2> /dev/null)
-    sid=${sid:-$(agent "$id" claude_session_id)}
-    old=$(agent "$id" pane_id)
-    type_in "$old" "/exit" 0 || true
-    sleep 2
-    write_files "$id" "$(agent "$id" purpose)" "$(agent "$id" story)"
-    read -r tab pane < <(launch "$id" "pane:$id" "$(agent "$id" cwd)" "$(agent "$id" model)" -- --resume "$sid")
-    z close-pane -p "$old" 2> /dev/null || true
+    relaunch "$id"
     # shellcheck disable=SC2016
-    jset --arg a "$id" --arg pn "$pane" --arg c "$sid" --arg pm "$PERM" '.agents[$a] += {pane_id: $pn, claude_session_id: $c, perm: $pm}'
-    echo "$id -> $PERM ($pane)"
+    jset --arg a "$id" --arg pm "$PERM" '.agents[$a].perm = $pm'
+    echo "$id -> $PERM"
     banner
+    ;;
+  purpose) # purpose <hid> <id> "<text>" — change the agent's purpose (system prompt) and relaunch it (--resume)
+    HID=$1 id=$2 text=${3:?purpose text}
+    guard_outside
+    [[ -n $(agent "$id" pane_id) ]] || die "unknown agent: $id"
+    # shellcheck disable=SC2016
+    jset --arg a "$id" --arg p "$text" '.agents[$a].purpose = $p'
+    relaunch "$id"
+    echo "$id purpose changed"
+    banner
+    ;;
+  approve) # approve <hid> <task-id> "<scope>" — task-scoped write approval, only after the user's explicit yes to that scope
+    HID=$1 tid=${2:?task id} scope=${3:?scope}
+    guard_outside
+    has_task "$tid"
+    id=$(jq -r --arg i "$tid" '.[] | select(.id == $i) | .owner // empty' "$ROOT/$HID/tasks.json")
+    [[ -n $id ]] || die "task $tid has no owner"
+    # shellcheck disable=SC2016
+    tset --arg i "$tid" --arg s "$scope" '(.[] | select(.id == $i)) |= (.approved += [$s])'
+    send "$id" drover "approved for task $tid: $scope"
+    echo "approved $tid: $scope"
     ;;
   move) # move <hid> <id> <tab|pane:<agent>>
     HID=$1 id=$2 where=$3
@@ -1227,6 +1284,13 @@ case $cmd in
       done
     done
     ;;
+  help) # help [cmd] — usage of a command (no cmd: the command list)
+    if [[ -n ${1:-} ]]; then
+      grep -E "^  ${1//[^a-z_-]/}\) #" "${BASH_SOURCE[0]}" | sed 's/^[^#]*# //' | head -n 1 | grep . || die "no such command: $1"
+    else
+      echo "commands: new spawn dispatch send report answer repos merge prlink flow show doc gc task story catchup pref inbox help model perm purpose approve move kill worktree worktrees rename flush read revive status close (mutating commands: <cmd> <HID> --force ...)"
+    fi
+    ;;
   _order) HID=$1; order_tabs ;; # internal: watcher
   _compact) # internal: from the drover's Stop hook — /compact once its context passes DROVER_COMPACT_AT tokens (every turn rereads it)
     HID=$1 pane=$2 h="$ROOT/$1"
@@ -1238,7 +1302,7 @@ case $cmd in
     ((${u:-0} >= ${DROVER_COMPACT_AT:-120000})) || exit 0
     sleep 3
     [[ $(state drover) == idle ]] || exit 0 # a queued event started the next turn
-    type_in "$pane" "/compact Keep: standing user instructions, decisions, open questions and threads, agents and their tasks. Drop: tool output, details of finished tasks." 1 1 || exit 0
+    type_in "$pane" "/compact Keep: standing user instructions, decisions, open questions and threads, agents and their tasks; the inbox Monitor (Monitor tool, drover.sh inbox) keeps running, do not re-arm it. Drop: tool output, details of finished tasks." 1 1 || exit 0
     touch "$h/compacted"
     ;;
   _recreate_corral) # internal: watcher — the dashboard only, never the drover

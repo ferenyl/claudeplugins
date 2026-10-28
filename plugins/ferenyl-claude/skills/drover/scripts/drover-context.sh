@@ -34,7 +34,7 @@ if [[ -n ${DROVER_HID:-} ]]; then # this pane is the drover of one corral: look 
   elif [[ $src == resume && -n $old && $old != "$sid" ]]; then
     echo "This pane is drover $DROVER_HID; resume its own session with /resume $old"
   fi
-  jq -r '"Active drover \(.id), session \(.session) — you are the drover, use /ferenyl-claude:drover. Run drover.sh catchup \(.id), then re-arm the inbox Monitor (a /clear ends it): drover.sh inbox \(.id), timeout_ms 1800000."' "$r"
+  jq -r '"Active drover \(.id), session \(.session) — you are the drover, use /ferenyl-claude:drover. Run drover.sh catchup \(.id), then re-arm the inbox Monitor with the Monitor tool, never Bash run_in_background (a /clear ends it, /compact does not): drover.sh inbox \(.id), timeout_ms 1800000."' "$r"
   agents "$r"
   [[ ! -f $D/$DROVER_HID/stories.json ]] || echo "Story mode: read $(cd "$(dirname "$0")/.." && pwd)/story.md; stories: drover.sh story $DROVER_HID list"
   exit 0
