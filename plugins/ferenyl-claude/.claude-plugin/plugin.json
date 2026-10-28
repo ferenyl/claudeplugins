@@ -1,5 +1,5 @@
 {
   "name": "ferenyl-claude",
-  "version": "0.14.6",
+  "version": "0.14.7",
   "description": "Orchestrate Claude agents in Zellij"
 }
