@@ -28,6 +28,11 @@ jq -rn --slurpfile r "$h/registry.json" --argjson live "${panes:-null}" \
 while IFS=$'\x1f' read -r id model tab pane st age perm purpose; do
   printf '%-16s %-8s %-12s %-12s %-28s %-5s %-8s %s\n' "$id" "$model" "$tab" "$pane" "$st" "$age" "$perm" "$purpose"
 done
+echo; echo "== files =="
+{
+  for p in brief.md plan.md; do [[ ! -f $h/$p ]] || printf '%s\t-\t-\n' "$p"; done
+  jq -r --arg h "$h/" '.[]? | "\(.path | ltrimstr($h))\t\(.agent | if . == "" then "-" else . end)\t\(.note)"' "$h/docs.json" 2>/dev/null
+} | column -t -s $'\t'
 echo; echo "== tasks =="
 jq -r --arg all "${2:-}" '(.[]? | select($all == "--all" or .state != "done") | "\(.id)\t\(.state)\t\(.owner // "-")\t\(.title)"),
   (if $all != "--all" and ([.[]? | select(.state == "done")] | length) > 0 then "(\([.[] | select(.state == "done")] | length) done, status --all)\t\t\t" else empty end)' "$h/tasks.json" 2>/dev/null | column -t -s $'\t'
