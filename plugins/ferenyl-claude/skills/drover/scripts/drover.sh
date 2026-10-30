@@ -175,6 +175,29 @@ close_agent_pane() { # id
   tab_empty "$tab" && z close-tab-by-id "$tab" 2> /dev/null || true
 }
 
+docs_sync() { # [agent] [note] [changed]: copy user documents among <changed> from the corral folder into docs/, register every unregistered file in docs/ in docs.json
+  local h="$ROOT/$HID" a=${1:-} note=${2:-} changed=${3:-} f p rel cwd
+  local dd="$h/docs" dj="$h/docs.json"
+  mkdir -p "$dd"
+  [[ -f $dj ]] || echo '[]' > "$dj"
+  cwd=$( [[ -z $a ]] || agent "$a" cwd)
+  for f in ${changed//,/ }; do
+    [[ $f == /* ]] || f=${cwd:-$h}/$f
+    p=$(realpath -m "$f") rel=${p#"$h"/}
+    [[ $p == "$h"/* && -f $p ]] || continue
+    case $rel in
+      docs/* | agents/* | status/* | reports/* | inbox/* | queue/* | locks/* | stories/* | brief.md | plan.md | rules.md | *.json | *.log | *.kdl | *.lock | *.sh | *.pid | *.prompt* | *.done) continue ;;
+    esac
+    [[ -e $dd/$rel ]] && ! cmp -s "$p" "$dd/$rel" && { echo "docs/$rel exists with other content, not copied: $p" >&2; continue; }
+    mkdir -p "$(dirname "$dd/$rel")" && cp "$p" "$dd/$rel"
+  done
+  find "$dd" -type f -printf '%P\n' 2> /dev/null | sort | while read -r f; do
+    jq -e --arg p "$dd/$f" 'any(.[]?; .path == $p)' "$dj" > /dev/null 2>&1 && continue
+    # shellcheck disable=SC2016
+    jfile "$dj" --arg p "$dd/$f" --arg n "${note:-$f}" --arg a "$a" '. + [{path: $p, note: $n, agent: $a, added_at: (now | todate)}]'
+  done
+}
+
 close_show() { # close the floating pane opened by the last `show` (if still open)
   local p
   p=$(jq -r '.drover.show_pane // empty' "$(reg)")
@@ -246,6 +269,7 @@ Agents (live list, read only if you need to message someone): $h/registry.json
 Messages cost the receiver a full turn: send one only when you are blocked on another agent or have a finished result it needs. No progress updates, acks or thanks; do not reply to a message unless it asks something.
 drover.sh send $HID <to-id|drover> $id "<one-line message>"
 Longer content: write a file in $h and send the path.
+Documents for the user (notes, analyses, specs, HTML, …): write them in $h/docs/ (the path given in your task, if any) and list them in report --changed; they are registered in $h/docs.json automatically.
 
 When a task is done (or you cannot finish it), report once. Put any detail in $h/reports/$id.<task-id>.md first; this records the result and tells the drover:
 drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--changed "<files>"] [--open "<questions>"]
@@ -511,7 +535,7 @@ case $cmd in
     slug=$(slugify "${slug,,}") S="corral-$slug-$HID"
     valid_id "$slug" slug
     h="$ROOT/$HID"
-    mkdir -p "$h"/{agents,status,reports,inbox}
+    mkdir -p "$h"/{agents,status,reports,inbox,docs}
     jq -n --arg id "$HID" --arg s "$S" --arg sl "$slug" --arg p "$proj" --arg o "$PWD" --arg l "$dsid" --arg m "$model" \
       --arg sid "$(cat /proc/sys/kernel/random/uuid)" --argjson f "$fork" \
       --arg v "$(jq -r '.version // empty' "$DIR/../../../.claude-plugin/plugin.json" 2> /dev/null || true)" \
@@ -647,6 +671,7 @@ case $cmd in
     # shellcheck disable=SC2016
     jq -nc --arg t "$tid" --arg s "$st" --arg m "$sum" --arg c "$changed" --arg o "$open" --arg at "$now" \
       '{task: $t, status: $s, summary: $m, changed: $c, open: $o, at: $at}' | tee "$r/$id.json" >> "$r/$id.log"
+    docs_sync "$id" "${sum:0:140}" "$([[ $changed == - ]] || echo "$changed")" || echo "docs: sync failed" >&2
     # shellcheck disable=SC2016
     ! $known || tset --arg i "$tid" --arg at "$now" --arg s "$st" \
       '(.[] | select(.id == $i)) |= (if $s == "blocked" or $s == "question" then . else .state = $s | .finished_at = $at end)'
@@ -1002,7 +1027,7 @@ case $cmd in
     ;;
   show) # show <hid> [plan|brief|<path>] — open a document of this corral in a floating pane on the drover tab (the drover never reads it itself)
     HID=$1 p=${2:-plan} h="$ROOT/$1"
-    case $p in plan | brief) p=$h/$p.md ;; esac
+    case $p in plan | brief) p=$h/$p.md ;; /*) ;; *) [[ ! -f $h/docs/$p ]] || p=$h/docs/$p ;; esac
     p=$(realpath -m "$p")
     [[ $p == "$h"/* ]] || jq -e --arg p "$p" 'any(.[]?; .path == $p)' "$h/docs.json" > /dev/null 2>&1 || die "not a drover document: $p"
     [[ -f $p ]] || die "no such file: $p"
@@ -1228,12 +1253,19 @@ case $cmd in
     touch "$h/close.done"
     echo "shut down: $s"
     ;;
-  doc) # doc <hid> add <abs-path> "<note>" [--agent id] | rm <path> | list — documents worth reading (brief.md and plan.md are listed automatically)
-    HID=$1 dj="$ROOT/$HID/docs.json"
+  doc) # doc <hid> add <path|name> "<note>" [--agent id] | path <name> | rm <name|path> | list — corral documents, kept in <HID>/docs/ and registered in docs.json (brief.md and plan.md are listed automatically)
+    HID=$1 dd="$ROOT/$HID/docs" dj="$ROOT/$HID/docs.json"
+    mkdir -p "$dd"
+    docpath() { # name or abs path -> file in docs/ (a relative name is relative to docs/)
+      local n=$1
+      [[ $n == /* ]] || n=$dd/$n
+      n=$(realpath -m "$n")
+      [[ $n == "$dd"/* ]] && echo "$n"
+    }
     case ${2:-} in
       add)
         guard_outside
-        p=${3:?abs path} note='' agent=''
+        src=${3:?path or name} note='' agent=''
         shift 3
         [[ ${1:---} == --* ]] || { note=$1; shift; }
         while (($#)); do
@@ -1242,28 +1274,42 @@ case $cmd in
             *) die "unknown option: $1" ;;
           esac
         done
-        [[ $p == /* ]] || die "doc path must be absolute: $p"
         [[ -z $agent ]] || valid_id "$agent" "agent id"
+        if p=$(docpath "$src"); then
+          [[ -f $p ]] || die "no such file: $p"
+        else # outside docs/: copy it in
+          [[ -f $src ]] || die "no such file: $src"
+          p=$dd/$(basename "$src")
+          [[ ! -e $p ]] || cmp -s "$src" "$p" || die "docs/$(basename "$src") exists with other content: rm it or rename the source"
+          cp "$src" "$p"
+        fi
         [[ -f $dj ]] || echo '[]' > "$dj"
         # shellcheck disable=SC2016
         jfile "$dj" --arg p "$p" --arg n "$note" --arg a "$agent" \
           'map(select(.path != $p)) + [{path: $p, note: $n, agent: $a, added_at: (now | todate)}]'
         echo "doc: $p"
         ;;
+      path) # where an agent should write a new document
+        p=$(docpath "${3:?name}") || die "doc name must stay inside $dd: $3"
+        mkdir -p "$(dirname "$p")"
+        echo "$p"
+        ;;
       rm)
         guard_outside
-        [[ -f $dj ]] || die "no docs"
+        p=$(docpath "${3:?name or path}") || p=$(realpath -m "$3")
         # shellcheck disable=SC2016
-        jfile "$dj" --arg p "${3:?path}" 'map(select(.path != $p))'
-        echo "removed: $3"
+        [[ ! -f $dj ]] || jfile "$dj" --arg p "$p" 'map(select(.path != $p))'
+        [[ $p != "$dd"/* ]] || rm -f -- "$p"
+        echo "removed: $p"
         ;;
       list | '')
         for p in brief.md plan.md; do
           [[ ! -f $ROOT/$HID/$p ]] || printf '%s\t%s\t%s\n' "$ROOT/$HID/$p" "-" "$p"
         done
-        jq -r '.[]? | "\(.path)\t\(.agent | if . == "" then "-" else . end)\t\(.note)"' "$dj" 2> /dev/null || true
+        docs_sync # files written to docs/ without a report are registered too
+        jq -r '.[]? | "\(.path)\t\(.agent | if . == "" then "-" else . end)\t\(.note)"' "$dj"
         ;;
-      *) die "doc <HID> add <abs-path> \"<note>\" [--agent id] | rm <path> | list" ;;
+      *) die "doc <HID> add <path|name> \"<note>\" [--agent id] | path <name> | rm <name|path> | list" ;;
     esac
     ;;
   gc) # gc [days=30] — delete corrals shut down more than <days> ago, trim long message/inbox logs

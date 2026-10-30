@@ -18,11 +18,12 @@ drover.sh repos <HID>                     # git roots of the project, current br
 drover.sh merge <HID> <id> [--repo <path>] [--yes]  # branch into the checked-out branch; needs merge-local in the flow, else --yes after the user's yes (exit 6 = not in flow)
 drover.sh prlink <HID> <id> [--repo <path>] [--yes]  # push the agent's branch, print the create-PR link (pr-link|pr)
 drover.sh flow <HID> [<name>|ask] [tracker=assign,status,comment,link|-] [--story <sid>]   # set/show the git/PR flow (corral, or one story)
-drover.sh show <HID> [plan|brief|<path>]  # open a corral document in a floating pane on the drover tab (q closes; send/answer close it too)
+drover.sh show <HID> [plan|brief|<doc name>|<path>]  # open a corral document in a floating pane on the drover tab (q closes; send/answer close it too)
 drover.sh task <HID> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"]   # + story=S kind=K: story.md
 drover.sh task <HID> set <task-id> state=S owner=O [attempts+]   # prints hints at 2/3 attempts
 drover.sh task <HID> next | list [state]  # ready to dispatch (deps done) | all, with acceptance
-drover.sh doc <HID> add <abs-path> "<note>" [--agent id] | rm <path> | list   # docs for the user (brief.md, plan.md automatic)
+drover.sh doc <HID> path <name>         # <HID>/docs/<name> (dirs created): give it to the agent that writes the document
+drover.sh doc <HID> add <name|abs-path> "<note>" [--agent id] | rm <name|path> | list   # corral docs live in <HID>/docs/, registered in docs.json (a file outside is copied in; rm deletes the copy and its entry); list registers unregistered files in docs/ first; report does the same and copies --changed files from <HID>/ into docs/
 drover.sh catchup <HID>                   # inbox tail + age of the last inbox line, status, reports (summaries) newest first
 drover.sh inbox <HID>                     # follow new inbox lines (Monitor command; newest watcher wins, pid in inbox/pid)  ·  help [cmd] (usage of a command)
 drover.sh read <HID> <id> [lines]         # agent's screen (default 40 lines)
