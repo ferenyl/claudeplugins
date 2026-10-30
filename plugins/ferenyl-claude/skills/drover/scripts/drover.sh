@@ -303,6 +303,7 @@ EOF
 launch() { # id where cwd model -- claude-args...
   local id=$1 where=$2 cwd=$3 model=$4 h="$ROOT/$HID" tab pane target
   shift 5
+  trusted_at "$cwd" || ! trusted "$cwd" || trust_dir "$cwd" # a worktree of a trusted repo: claude itself would still ask
   local perm=${PERM:-$(agent "$id" perm)} mcp=()
   [[ ! -f $h/agents/$id.mcp.json ]] || mcp=(--strict-mcp-config --mcp-config "$h/agents/$id.mcp.json") # before another option: --mcp-config takes several values
   local cmd=("${CLEAN_ENV[@]}" "PATH=$DIR:$PATH" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$model" --settings "$h/agents/$id.settings.json"
@@ -484,16 +485,23 @@ ensure_drover() { # recreate the drover tab at position 1 if the tab or its clau
   order_tabs
 }
 
-trusted() { # dir or an ancestor accepted; a git worktree also counts through its main worktree
-  local x m
-  m=$(git -C "$1" worktree list --porcelain 2> /dev/null | sed -n '1s/^worktree //p')
-  for x in "$1" "$m"; do
-    while [[ -n $x && $x != / ]]; do
-      ! jq -e --arg d "$x" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1 || return 0
-      x=$(dirname "$x")
-    done
+trusted_at() { # dir or an ancestor accepted in claude's own config
+  local x=$1
+  while [[ -n $x && $x != / ]]; do
+    ! jq -e --arg d "$x" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1 || return 0
+    x=$(dirname "$x")
   done
   return 1
+}
+
+trusted() { # trusted_at, or a git worktree whose main worktree is
+  trusted_at "$1" || trusted_at "$(git -C "$1" worktree list --porcelain 2> /dev/null | sed -n '1s/^worktree //p')"
+}
+
+trust_dir() { # dir: mark it trusted in ~/.claude.json, so claude shows no trust dialog there
+  local f t
+  f=$(realpath ~/.claude.json) && t=$(mktemp "$f.drover.XXXXXX") || return 1
+  if jq --arg d "$1" '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' "$f" > "$t"; then mv "$t" "$f"; else rm -f "$t"; return 1; fi
 }
 
 # shellcheck disable=SC2178
