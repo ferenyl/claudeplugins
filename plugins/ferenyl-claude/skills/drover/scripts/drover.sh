@@ -286,18 +286,20 @@ EOF
   [[ -z ${3:-} ]] || printf '\nStory: read %s first; the user'"'"'s clarifications are appended there.\n' "$h/stories/$3.md" >> "$h/agents/$id.prompt.md"
   printf '\nGit/PR flow: %s. Pre-approved: %s. Any other write outside the working tree (commit, push, merge, PR/review/comment/thread, labels, assignment, work item or issue edits) on any host or tracker, by any means (CLI, MCP, API): ask first via report question with the exact action; do it only after the answer says yes; one yes = one action. Exception: a message from the drover "approved for task <id>: <scope>" (or the same under "Approved by the drover" in your task) covers exactly the writes named in that scope, for that task only; nothing else counts as approval.\nRevise large files with Edit, never rewrite them whole.\n' \
     "$(flow_line "${3:-}" | cut -d' ' -f1)" "$(flow_steps "${3:-}" | paste -sd' ' | grep . || echo none)" >> "$h/agents/$id.prompt.md"
+  [[ $(flow_line "${3:-}" | cut -d' ' -f1) != instructions ]] || printf 'Workflow: follow the work item, branch, commit and PR workflow in your instructions (CLAUDE.md, plugin skills); it replaces drover'"'"'s conventions. Writes it lists that are not in Pre-approved still need the question above.\n' >> "$h/agents/$id.prompt.md"
   [[ -z $nf || ! -f $nf ]] || printf '\nFlow notes (%s):\n%s\n' "$nf" "$(< "$nf")" >> "$h/agents/$id.prompt.md"
   [[ ${PERM:-$(agent "$id" perm)} != plan ]] || printf '\nWrite the plan to %s/plan.md (Write is pre-allowed there), then report done; do not call ExitPlanMode.\n' "$h" >> "$h/agents/$id.prompt.md"
-  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" --arg fa "$fa" --arg fk "$fk" '
+  jq -n --arg c "$DIR/drover-status.sh" --arg f "$h/status/$id.json" --arg d "$DIR" --arg x "$allow" --arg h "$h" --arg fa "$fa" --arg fk "$fk" --arg pl "$([[ ${PERM:-$(agent "$id" perm)} == plan ]] && echo 1)" '
     def lines: split("\n") | map(select(. != ""));
     ($fa | lines | unique) as $fa | {promptSuggestionEnabled: false, permissions: {additionalDirectories: [$h],
-    allow: (["Bash(drover.sh send *)", "Bash(drover.sh report *)", "Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"]
+    allow: (["Bash(drover.sh send *)", "Bash(drover.sh report *)", "Bash(\($d)/drover.sh send *)", "Bash(\($d)/drover.sh report *)", "Read(/\($h)/**)", "Edit(/\($h)/**)", "Write(/\($h)/**)"] + (if $pl == "1" then ["Read", "Grep", "Glob"] else [] end)
       + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))) + $fa),
     ask: (($fk | lines | unique) - $fa)}, hooks: {
     UserPromptSubmit: [{hooks: [{type: "command", command: "\($c) busy \($f)"}]}],
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
-    PostToolUse: [{hooks: [{type: "command", command: "\($c) unblock \($f)"}]}]}}' > "$h/agents/$id.settings.json"
+    PostToolUse: [{hooks: [{type: "command", command: "\($c) unblock \($f)"}]}]}
+    + (if $pl == "1" then {PreToolUse: [{matcher: "^mcp__", hooks: [{type: "command", command: "\($d)/drover-readonly.sh"}]}]} else {} end)}' > "$h/agents/$id.settings.json"
 }
 
 launch() { # id where cwd model -- claude-args...
@@ -583,7 +585,6 @@ case $cmd in
     done
     guard_outside
     [[ $PERM =~ ^[A-Za-z]*$ ]] || die "bad --perm: $PERM"
-    [[ $PERM != plan ]] || ALLOW="Read,Grep,Glob${ALLOW:+,$ALLOW}" # a planner must read without prompts
     [[ -z $tid ]] || has_task "$tid"
     [[ ${id,,} != droverstatusui ]] || die "droverstatusui is reserved for the web user"
     [[ $id != drover ]] || die "drover is reserved"
@@ -989,24 +990,31 @@ case $cmd in
     base=$(default_base)
     compare_url "$(git -C "$r" remote get-url origin)" "${base#origin/}" "$b"
     ;;
-  flow) # flow <hid> [<name>] [tracker=assign,status,comment,link|-] [--story <sid>] — set (name ask clears) or show the effective flow
-    HID=$1 name='' trk='' story=''
+  flow) # flow <hid> [<name>] [tracker=assign,status,comment,link|-] [steps=a,b|- (instructions only)] [--story <sid>] — set (name ask clears) or show the effective flow
+    HID=$1 name='' trk='' story='' stp=''
     shift
     while (($#)); do
       case $1 in
+        steps=*) stp=${1#*=}; shift ;;
         --story) story=${2:?--story needs a story id}; shift 2 ;;
         tracker=*) trk=${1#*=}; shift ;;
         *) name=$1; shift ;;
       esac
     done
     [[ -z $story ]] || has_story "$story"
+    [[ -z $stp || $name == instructions ]] || die "steps= only with: flow $HID instructions steps=…"
+    [[ $name != instructions || -n $stp ]] || die "use: flow $HID instructions steps=<step,…|->"
     if [[ -n $name$trk ]]; then
       guard_outside
       cur=$(flow_json "$story")
       if [[ $name == ask ]]; then
         f=null
       else
-        if [[ -n $name ]]; then f=$(flow_resolve "$name"); else
+        if [[ $name == instructions ]]; then
+          [[ $stp != - ]] || stp=''
+          for x in ${stp//,/ }; do [[ " $FLOW_STEPS " == *" $x "* ]] || die "unknown step '$x'; valid: $FLOW_STEPS"; done
+          f=$(jq -nc --arg s "${stp//,/ }" '{name: "instructions", steps: ($s | split(" ") | map(select(. != "")))}')
+        elif [[ -n $name ]]; then f=$(flow_resolve "$name"); else
           [[ -n $cur ]] || die "no flow set: flow $HID <name> [tracker=…]"
           f=$(jq -c 'del(.tracker)' <<< "$cur")
         fi

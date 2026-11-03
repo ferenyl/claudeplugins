@@ -48,6 +48,7 @@ flow_resolve() { # name: flow json {name, steps, file?}; built-in names cannot b
     return
   fi
   [[ $n =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "bad flow name: $n"
+  [[ $n != instructions ]] || die "use: flow $HID instructions steps=<step,…|->"
   p=$(jq -r .project "$HOME/.claude/drover/$HID/registry.json")
   for f in "$p/.drover/flows/$n.md" "$HOME/.claude/drover/flows/$n.md"; do
     [[ -f $f ]] || continue

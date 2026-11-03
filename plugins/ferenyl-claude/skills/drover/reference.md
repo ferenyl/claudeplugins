@@ -17,7 +17,7 @@ drover.sh worktrees <HID> [--repo <path>] # path branch dirty|clean
 drover.sh repos <HID>                     # git roots of the project, current branch, submodules
 drover.sh merge <HID> <id> [--repo <path>] [--yes]  # branch into the checked-out branch; needs merge-local in the flow, else --yes after the user's yes (exit 6 = not in flow)
 drover.sh prlink <HID> <id> [--repo <path>] [--yes]  # push the agent's branch, print the create-PR link (pr-link|pr)
-drover.sh flow <HID> [<name>|ask] [tracker=assign,status,comment,link|-] [--story <sid>]   # set/show the git/PR flow (corral, or one story)
+drover.sh flow <HID> [<name>|ask|instructions steps=a,b] [tracker=assign,status,comment,link|-] [--story <sid>]   # set/show the git/PR flow (corral, or one story)
 drover.sh show <HID> [plan|brief|<doc name>|<path>]  # open a corral document in a floating pane on the drover tab (q closes; send/answer close it too)
 drover.sh task <HID> add <id> "<title>" [owner=O] [depends=a,b] [accept="x;y"]   # + story=S kind=K: story.md
 drover.sh task <HID> set <task-id> state=S owner=O [attempts+]   # prints hints at 2/3 attempts
