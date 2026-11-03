@@ -500,10 +500,28 @@ trusted() { # trusted_at, or a git worktree whose main worktree is
   trusted_at "$1" || trusted_at "$(git -C "$1" worktree list --porcelain 2> /dev/null | sed -n '1s/^worktree //p')"
 }
 
-trust_dir() { # dir: mark it trusted in ~/.claude.json, so claude shows no trust dialog there
-  local f t
+trust_dir() { # dir: mark it trusted in ~/.claude.json, so claude shows no trust dialog there; an entry drover creates is recorded in <HID>/trusted.json
+  local f t new=''
   f=$(realpath ~/.claude.json) && t=$(mktemp "$f.drover.XXXXXX") || return 1
+  jq -e --arg d "$1" '.projects | has($d)' "$f" > /dev/null 2>&1 || new=1
   if jq --arg d "$1" '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' "$f" > "$t"; then mv "$t" "$f"; else rm -f "$t"; return 1; fi
+  [[ -z $new ]] || {
+    [[ -f $ROOT/$HID/trusted.json ]] || echo '[]' > "$ROOT/$HID/trusted.json"
+    jfile "$ROOT/$HID/trusted.json" --arg p "$1" '. + [$p] | unique'
+  }
+}
+
+untrust() { # [dir…]: remove the entries drover added (<HID>/trusted.json) for the given dirs (none = all) and those whose dir is gone; entries drover did not add stay
+  local tj="$ROOT/$HID/trusted.json" f gone r p
+  [[ -f $tj ]] || return 0
+  gone=$(for p in $(jq -r '.[]' "$tj"); do [[ -d $p ]] || echo "$p"; done | jq -R . | jq -sc .)
+  r=$(jq -c --argjson g "$gone" --argjson a "$(printf '%s\n' "$@" | jq -R . | jq -sc 'map(select(. != ""))')" \
+    '[.[] | select(($a | length) == 0 or (. as $x | $a | any(. == $x)) or (. as $x | $g | any(. == $x)))]' "$tj")
+  f=$(realpath ~/.claude.json) || return 0
+  # shellcheck disable=SC2016
+  jfile "$f" --argjson r "$r" 'reduce $r[] as $p (.; del(.projects[$p]))' || return 0
+  # shellcheck disable=SC2016
+  jfile "$tj" --argjson r "$r" '. - $r'
 }
 
 # shellcheck disable=SC2178
@@ -931,6 +949,7 @@ case $cmd in
       # shellcheck disable=SC2016
       jset --arg a "$id" 'del(.branches[$a])'
       rmdir "$d" 2> /dev/null || true
+      untrust "$d/$id"
       echo "removed $d/$id (branch $b kept)"
       exit 0
     fi
@@ -1110,6 +1129,7 @@ case $cmd in
       done
     fi
     close_agent_pane "$id"
+    untrust "$(agent "$id" cwd)"
     # shellcheck disable=SC2016
     jset --arg a "$id" 'del(.agents[$a], .branches[$a])'
     rm -f "$ROOT/$HID/status/$id.json" "$ROOT/$HID/status/$id.json.lock" "$ROOT/$HID/queue/$id.txt" "$ROOT/$HID/agents/$id.mcp.json"
@@ -1264,6 +1284,7 @@ case $cmd in
         rmdir "$d" "$(dirname "$d")" 2> /dev/null || true
       done
     fi
+    untrust
     for id in $(jq -r '.agents | keys[]' "$(reg)"); do rm -f "$h/status/$id.json" "$h/status/$id.json.lock" "$h/queue/$id.txt"; done
     jset '.closed = true | .shutdown = true | del(.closing_at) | del(.remove_worktrees) | .agents = {}'
     touch "$h/close.done"
