@@ -305,7 +305,7 @@ EOF
 launch() { # id where cwd model -- claude-args...
   local id=$1 where=$2 cwd=$3 model=$4 h="$ROOT/$HID" tab pane target
   shift 5
-  trusted_at "$cwd" || ! trusted "$cwd" || trust_dir "$cwd" # a worktree of a trusted repo: claude itself would still ask
+  trusted_at "$cwd" || { [[ ${trust:-} != --trust ]] && ! trusted "$cwd"; } || trust_dir "$cwd" # --trust (the user said yes) or a worktree of a trusted repo: no dialog
   local perm=${PERM:-$(agent "$id" perm)} mcp=()
   [[ ! -f $h/agents/$id.mcp.json ]] || mcp=(--strict-mcp-config --mcp-config "$h/agents/$id.mcp.json") # before another option: --mcp-config takes several values
   local cmd=("${CLEAN_ENV[@]}" "PATH=$DIR:$PATH" DROVER_AGENT=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --model "$model" --settings "$h/agents/$id.settings.json"
@@ -615,7 +615,7 @@ case $cmd in
       --arg c "$csid" --arg d "$cwd" --arg tn "$( [[ $where == tab ]] && echo "$id" || agent "${where#pane:}" tab_name)" --arg s "$story" --arg pm "$PERM" --arg al "$ALLOW" --arg mc "$mcps" \
       '.agents[$a] = {purpose: $p, model: $m, tab_id: $t, tab_name: $tn, pane_id: $pn, claude_session_id: $c, cwd: $d, worktree: null, created: (now | todate)}
         + if $s == "" then {} else {story: $s} end + if $pm == "" then {} else {perm: $pm} end + if $al == "" then {} else {allow: $al} end + if $mc == "" then {} else {mcp: $mc} end'
-    if [[ $trust == --trust ]] && ! trusted "$cwd"; then
+    if [[ $trust == --trust ]] && ! trusted_at "$cwd"; then # trust_dir failed: answer the dialog
       sleep 4
       z send-keys -p "$pane" Down Enter
       echo "trust answered — verify: zellij -s $(sess) action dump-screen -p $pane"
