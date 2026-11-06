@@ -276,7 +276,7 @@ drover.sh report $HID $id <task-id> done|blocked|failed "<1-3 line summary>" [--
 To ask the drover or the user a question instead of finishing: drover.sh report $HID $id <task-id> question "<text>" [--options "a|b"]
 Then stop and wait.
 
-Search code with the jcodemunch MCP first when available; use Read for config, logs, JSON and docs; if a tool call is denied, switch tool, never retry it via Bash.
+Use the tools your instructions (CLAUDE.md) prefer; if a tool call is denied, switch tool, never retry it via Bash.
 EOF
   local rf
   for rf in "$HOME/.claude/drover/rules.md" "$h/rules.md"; do
@@ -299,7 +299,7 @@ EOF
     Stop: [{hooks: [{type: "command", command: "\($c) idle \($f)"}]}],
     Notification: [{matcher: "permission_prompt|elicitation_dialog", hooks: [{type: "command", command: "\($c) blocked \($f)"}]}],
     PostToolUse: [{hooks: [{type: "command", command: "\($c) unblock \($f)"}]}]}
-    + (if $pl == "1" then {PreToolUse: [{matcher: "^mcp__", hooks: [{type: "command", command: "\($d)/drover-readonly.sh"}]}]} else {} end)}' > "$h/agents/$id.settings.json"
+    + (if $pl == "1" then {PreToolUse: [{matcher: "^mcp__", hooks: [{type: "command", command: ([$d + "/drover-readonly.sh"] + ($x | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(startswith("mcp__")))) | map(@sh) | join(" "))}]}]} else {} end)}' > "$h/agents/$id.settings.json"
 }
 
 launch() { # id where cwd model -- claude-args...
@@ -574,9 +574,6 @@ case $cmd in
     [[ -z $brief ]] || cp "$brief" "$h/brief.md"
     if [[ ! -f $ROOT/rules.md ]]; then
       printf '# Rules for all agents of every corral (added to each agent prompt, before <HID>/rules.md).\n# May widen the default "edit only inside your working directory and the corral folder".\n' > "$ROOT/rules.md"
-    fi
-    if [[ ! -f $h/rules.md ]] && jq -e '.mcpServers.jcodemunch' "$HOME/.claude.json" > /dev/null 2>&1; then
-      echo 'Search code with the jcodemunch MCP first (index the repo if needed); Read only for config, logs, JSON and docs.' > "$h/rules.md"
     fi
     write_drover_files
     write_layout
