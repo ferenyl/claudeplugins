@@ -3,6 +3,7 @@
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT="$HOME/.claude/drover"
+CLAUDE_JSON="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" # claude's own config: user-scope MCP servers, trust
 # Claude-session env that must not leak into the zellij server or agents (breaks transcripts, --resume, titles)
 CLEAN_ENV=(env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH
   -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u CLAUDE_ENV_FILE
@@ -228,7 +229,7 @@ mcp_config() { # cwd list: --mcp config with only the named servers (user scope,
   for d in $(jq -r '.[]' <<< "$proj"); do [[ ! -f $d/.mcp.json ]] || pj+=("$d/.mcp.json"); done
   f=$(jq -sc '{mcpServers: (map(.mcpServers // {}) | add // {})}' /dev/null "${pj[@]}")
   # shellcheck disable=SC2016
-  jq -n --arg l "$2" --argjson dirs "$proj" --slurpfile u "$HOME/.claude.json" --argjson p "$f" '
+  jq -n --arg l "$2" --argjson dirs "$proj" --slurpfile u "$CLAUDE_JSON" --argjson p "$f" '
     ($l | split(",") | map(gsub("\\s"; "")) | map(select(. != "" and . != "none"))) as $n
     | (($u[0].mcpServers // {}) + ([$dirs[] | $u[0].projects[.].mcpServers // {}] | add // {}) + $p.mcpServers) as $all
     | ($n - ($all | keys)) as $miss
@@ -418,14 +419,18 @@ wait_tabs() { # the layout is applied asynchronously after attach --create-backg
 }
 
 start_session() { # name proj: create the session from corral.kdl; the user's default layout is not guaranteed to convert, so retry with the stock bars
-  local s=$1 proj=$2 h="$ROOT/$HID" try
+  local s=$1 proj=$2 h="$ROOT/$HID" try term=${TERM:-}
+  # panes inherit the server's TERM, i.e. the caller's: revive from a non-terminal (TERM unset/dumb/unknown) must not hand that to every agent
+  case $term in '' | dumb | unknown) term='' ;; esac
+  [[ -z $term ]] || ! command -v infocmp > /dev/null || infocmp "$term" > /dev/null 2>&1 || term=''
+  term=${term:-xterm-256color}
   for try in user stock; do
     if [[ $try == stock ]]; then
       timeout 10 zellij kill-session "$s" 2> /dev/null || true
       timeout 10 zellij delete-session "$s" 2> /dev/null || true
       TPL_STOCK=1 write_layout
     fi
-    (cd "$proj" && "${SERVER_ENV[@]}" timeout 10 zellij -n "$h/corral.kdl" attach --create-background "$s") || true
+    (cd "$proj" && "${SERVER_ENV[@]}" TERM="$term" COLORTERM="${COLORTERM:-truecolor}" timeout 10 zellij -n "$h/corral.kdl" attach --create-background "$s") || true
     if wait_tabs; then
       "$DIR/drover-ghost.sh" start "$HID"
       return 0
@@ -490,7 +495,7 @@ ensure_drover() { # recreate the drover tab at position 1 if the tab or its clau
 trusted_at() { # dir or an ancestor accepted in claude's own config
   local x=$1
   while [[ -n $x && $x != / ]]; do
-    ! jq -e --arg d "$x" '.projects[$d].hasTrustDialogAccepted == true' ~/.claude.json > /dev/null 2>&1 || return 0
+    ! jq -e --arg d "$x" '.projects[$d].hasTrustDialogAccepted == true' "$CLAUDE_JSON" > /dev/null 2>&1 || return 0
     x=$(dirname "$x")
   done
   return 1
@@ -502,7 +507,7 @@ trusted() { # trusted_at, or a git worktree whose main worktree is
 
 trust_dir() { # dir: mark it trusted in ~/.claude.json, so claude shows no trust dialog there; an entry drover creates is recorded in <HID>/trusted.json
   local f t new=''
-  f=$(realpath ~/.claude.json) && t=$(mktemp "$f.drover.XXXXXX") || return 1
+  f=$(realpath "$CLAUDE_JSON") && t=$(mktemp "$f.drover.XXXXXX") || return 1
   jq -e --arg d "$1" '.projects | has($d)' "$f" > /dev/null 2>&1 || new=1
   if jq --arg d "$1" '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' "$f" > "$t"; then mv "$t" "$f"; else rm -f "$t"; return 1; fi
   [[ -z $new ]] || {
@@ -517,7 +522,7 @@ untrust() { # [dir…]: remove the entries drover added (<HID>/trusted.json) for
   gone=$(for p in $(jq -r '.[]' "$tj"); do [[ -d $p ]] || echo "$p"; done | jq -R . | jq -sc .)
   r=$(jq -c --argjson g "$gone" --argjson a "$(printf '%s\n' "$@" | jq -R . | jq -sc 'map(select(. != ""))')" \
     '[.[] | select(($a | length) == 0 or (. as $x | $a | any(. == $x)) or (. as $x | $g | any(. == $x)))]' "$tj")
-  f=$(realpath ~/.claude.json) || return 0
+  f=$(realpath "$CLAUDE_JSON") || return 0
   # shellcheck disable=SC2016
   jfile "$f" --argjson r "$r" 'reduce $r[] as $p (.; del(.projects[$p]))' || return 0
   # shellcheck disable=SC2016
